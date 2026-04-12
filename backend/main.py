@@ -21,6 +21,7 @@ API 列表：
 import os
 import uuid
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -50,6 +51,19 @@ UPLOADS_DIR.mkdir(exist_ok=True)
 OUTPUTS_DIR.mkdir(exist_ok=True)
 
 # ──────────────────────────────────────────────────────────────
+#  Lifespan (replaces deprecated @app.on_event)
+# ──────────────────────────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用启动时初始化 SQLite 数据库（使用现代 lifespan 模式）"""
+    from modules.template_store import init_database
+    init_database()
+    logger.info("数据库初始化完成")
+    yield
+    # shutdown cleanup (if needed in future)
+
+# ──────────────────────────────────────────────────────────────
 #  App 初始化
 # ──────────────────────────────────────────────────────────────
 
@@ -57,6 +71,7 @@ app = FastAPI(
     title="Smart Form Filler API",
     description="智能表格自动填写系统后端 API",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # 允许前端 Next.js dev server 跨域访问
@@ -67,17 +82,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# ──────────────────────────────────────────────────────────────
-#  启动事件：初始化数据库
-# ──────────────────────────────────────────────────────────────
-
-@app.on_event("startup")
-async def startup_event():
-    """应用启动时初始化 SQLite 数据库"""
-    from modules.template_store import init_database
-    init_database()
-    logger.info("数据库初始化完成")
 
 
 # ──────────────────────────────────────────────────────────────
@@ -212,7 +216,8 @@ async def update_template_fields(template_id: int, req: FieldsUpdateRequest):
     """批量更新字段映射与排版参数"""
     from modules.template_store import update_field
     for upd in req.fields:
-        data = upd.dict(exclude_none=True)
+        # Use model_dump (Pydantic v2) with fallback to dict (Pydantic v1)
+        data = upd.model_dump(exclude_none=True) if hasattr(upd, 'model_dump') else upd.dict(exclude_none=True)
         fid = data.pop("id")
         if data:
             update_field(fid, data)

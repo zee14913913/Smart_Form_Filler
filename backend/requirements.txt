@@ -1,16 +1,42 @@
-fastapi==0.111.0
-uvicorn[standard]==0.29.0
-python-multipart==0.0.9
-pdfplumber==0.11.0
-pdf2image==1.17.0
-opencv-python-headless==4.9.0.80
-pytesseract==0.3.10
-pypdf==4.2.0
-reportlab==4.2.0
-pdfrw==0.4
-rapidfuzz==3.9.0
-openpyxl==3.1.2
-Pillow==10.3.0
-numpy==1.26.4
-aiofiles==23.2.1
-python-dotenv==1.0.1
+# Smart Form Filler — Backend Dependencies
+# Tested on Python 3.11 / 3.12 (recommended: 3.12)
+# Install: pip install -r requirements.txt
+
+# Web framework
+fastapi>=0.111.0,<0.200.0
+uvicorn[standard]>=0.29.0,<0.35.0
+python-multipart>=0.0.9,<0.1.0
+
+# PDF processing — digital PDFs
+pdfplumber>=0.11.0,<0.12.0
+pypdf>=4.2.0,<6.0.0
+
+# PDF processing — scanned PDFs (OCR path)
+# Requires system Tesseract + Poppler installed separately (see README)
+pdf2image>=1.17.0,<2.0.0
+pytesseract>=0.3.10,<0.4.0
+opencv-python-headless>=4.9.0,<5.0.0
+
+# PDF output / overlay
+reportlab>=4.2.0,<5.0.0
+
+# pdfrw: legacy PDF toolkit (optional, kept for compatibility)
+pdfrw>=0.4,<0.5
+
+# Fuzzy string matching
+rapidfuzz>=3.9.0,<4.0.0
+
+# Excel reading / writing
+openpyxl>=3.1.2,<4.0.0
+
+# Image processing
+Pillow>=10.3.0,<12.0.0
+
+# Numeric
+numpy>=1.26.0,<3.0.0
+
+# Async file I/O
+aiofiles>=23.2.1,<25.0.0
+
+# Environment variables
+python-dotenv>=1.0.1,<2.0.0

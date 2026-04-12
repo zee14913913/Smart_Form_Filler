@@ -27,7 +27,8 @@ from pathlib import Path
 from typing import Optional
 
 from reportlab.pdfgen import canvas
-from reportlab.lib.units import pt
+# Note: 'pt' is not a constant in reportlab.lib.units (it's already in pt units natively)
+# We use raw point values directly — 1 pt = 1/72 inch, which is reportlab's native unit
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from pypdf import PdfReader, PdfWriter

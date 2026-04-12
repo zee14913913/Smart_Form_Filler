@@ -139,16 +139,40 @@ def _analyze_digital_pdf(file_path: str) -> list[dict]:
 
 def _find_nearby_label(words: list[dict], x0: float, top: float, x1: float, bottom: float) -> str:
     """
-    在 words 列表中查找格子左侧或上方最近的文字作为标签。
-    
-    搜索范围：
-    - 左侧：同行（top ± 5pt），x 坐标在 x0-200 到 x0-2 之间
-    - 上方：格子上方 0-15pt，x 坐标与格子有重叠
+    在 words 列表中查找格子上方或左侧的全部标签词汇，拼接为完整标签字符串。
+
+    策略（改进版）：
+    1. 优先找格子正上方一行（top - 20pt 到 top）内、水平与格子重叠的所有词，
+       按 x0 排序后拼接成完整标签。
+    2. 若上方无词，再找同行左侧最近的词。
     """
-    best_label = ""
-    best_dist = float("inf")
     mid_y = (top + bottom) / 2
 
+    # ── 策略 1：格子正上方一行内的所有词 ──────────────────────────
+    label_row_top = top - 22      # 向上最多 22pt（约一行文字高度）
+    label_row_bottom = top        # 不超过格子顶部
+    above_words = []
+    for word in words:
+        wx0 = word.get("x0", 0)
+        wx1 = word.get("x1", 0)
+        wtop = word.get("top", 0)
+        wbottom = word.get("bottom", 0)
+        text = word.get("text", "").strip()
+        if not text:
+            continue
+        # 垂直上方范围
+        if label_row_top <= wtop <= label_row_bottom:
+            # 水平：从格子左边 x0 起，最多延伸到格子右边 x1 + 20pt
+            if wx0 >= x0 - 5 and wx1 <= x1 + 20:
+                above_words.append((wx0, text))
+
+    if above_words:
+        above_words.sort(key=lambda t: t[0])
+        return " ".join(t[1] for t in above_words)
+
+    # ── 策略 2：同行左侧最近的单词 ────────────────────────────────
+    best_label = ""
+    best_dist = float("inf")
     for word in words:
         wx0 = word.get("x0", 0)
         wx1 = word.get("x1", 0)
@@ -158,21 +182,11 @@ def _find_nearby_label(words: list[dict], x0: float, top: float, x1: float, bott
         if not text:
             continue
         wmid_y = (wtop + wbottom) / 2
-
-        # 左侧标签：同行范围内，在格子左边
         if wx1 <= x0 + 2 and abs(wmid_y - mid_y) <= 8:
             dist = x0 - wx1
             if dist < best_dist:
                 best_dist = dist
                 best_label = text
-
-        # 上方标签：格子上方 0-20pt，水平位置有重叠
-        elif wtop < top and top - wbottom <= 20:
-            if wx0 < x1 and wx1 > x0:  # 水平有重叠
-                dist = top - wbottom
-                if dist < best_dist:
-                    best_dist = dist
-                    best_label = text
 
     return best_label
 

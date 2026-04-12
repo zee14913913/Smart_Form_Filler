@@ -76,16 +76,17 @@ BUILTIN_SYNONYMS: dict[str, list[str]] = {
         "电子邮件", "电邮",
     ],
     "customer.address_line1": [
+        "address line 1", "address 1", "alamat 1", "alamat baris 1",
         "address", "home address", "residential address",
         "alamat", "alamat rumah", "alamat kediaman",
-        "地址", "住址", "居住地址",
+        "地址第一行", "地址", "住址", "居住地址",
     ],
     "customer.address_line2": [
-        "address line 2", "address 2", "alamat 2",
+        "address line 2", "address 2", "alamat 2", "alamat baris 2",
         "地址第二行",
     ],
     "customer.address_line3": [
-        "address line 3", "address 3",
+        "address line 3", "address 3", "alamat 3",
         "地址第三行",
     ],
     "customer.postcode": [
@@ -219,27 +220,53 @@ def normalize_label(raw_label: str) -> str:
     返回空字符串表示无法自动匹配，需要用户手动选择。
 
     匹配流程：
-    1. 精确匹配（normalized）
-    2. RapidFuzz 模糊匹配（score_cutoff=75）
-    3. 返回空字符串
+    1. 精确匹配整个标签（normalized）
+    2. 将复合标签按 '/' 分段，逐段尝试精确匹配
+    3. 对每个分段尝试 RapidFuzz 模糊匹配（score_cutoff=72）
+    4. 对整个标签尝试 RapidFuzz 模糊匹配（score_cutoff=65，宽松）
+    5. 返回空字符串
     """
     if not raw_label or not raw_label.strip():
         return ""
 
     matcher = get_matcher()
-    normalized = _normalize_text(raw_label)
+    choices = list(matcher.keys())
 
-    # 步骤 1：精确匹配
+    # 步骤 1：精确匹配整个标签
+    normalized = _normalize_text(raw_label)
     if normalized in matcher:
         return matcher[normalized]
 
-    # 步骤 2：RapidFuzz 模糊匹配
-    choices = list(matcher.keys())
+    # 步骤 2 & 3：分段匹配（处理 "Full Name / Nama Penuh" 类型）
+    # 同时拆分 '(' 以去掉注释部分如 "(as per IC)"
+    segments = []
+    for part in raw_label.replace('(', '/').replace(')', '/').split('/'):
+        seg = part.strip()
+        if len(seg) >= 3:  # 忽略太短的片段
+            segments.append(seg)
+
+    for seg in segments:
+        norm_seg = _normalize_text(seg)
+        # 精确匹配
+        if norm_seg in matcher:
+            return matcher[norm_seg]
+        # 模糊匹配该分段
+        result = fuzz_process.extractOne(
+            norm_seg,
+            choices,
+            scorer=fuzz.token_sort_ratio,
+            score_cutoff=72,
+        )
+        if result:
+            matched_key, score, _ = result
+            return matcher[matched_key]
+
+    # 步骤 4：对完整标签宽松模糊匹配
     result = fuzz_process.extractOne(
         normalized,
         choices,
-        scorer=fuzz.token_sort_ratio,
-        score_cutoff=75,
+        scorer=fuzz.token_set_ratio,
+        score_cutoff=65,
     )
     if result:
         matched_key, score, _ = result
