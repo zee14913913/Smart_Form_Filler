@@ -144,6 +144,52 @@ CREATE TABLE IF NOT EXISTS fill_job_fields (
 );
 
 -- ──────────────────────────────────────────────────────────────
+-- Customers 表（数据库主数据源，替代 customer_master.xlsx 直读）
+-- ──────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS customers (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- 基础信息
+    customer_id         TEXT    NOT NULL UNIQUE,  -- 如 C001
+    full_name           TEXT    NOT NULL,
+    ic_no               TEXT,
+    date_of_birth       TEXT,
+    nationality         TEXT,
+    gender              TEXT,
+    marital_status      TEXT,
+    race                TEXT,
+    religion            TEXT,
+    -- 联系方式
+    mobile_no           TEXT,
+    home_tel            TEXT,
+    email               TEXT,
+    -- 地址
+    address_line1       TEXT,
+    address_line2       TEXT,
+    address_line3       TEXT,
+    postcode            TEXT,
+    city                TEXT,
+    state               TEXT,
+    country             TEXT    DEFAULT 'Malaysia',
+    -- 工作/财务
+    employer_name       TEXT,
+    employer_address    TEXT,
+    monthly_income      TEXT,
+    annual_income       TEXT,
+    occupation          TEXT,
+    employment_type     TEXT,
+    years_with_employer TEXT,
+    -- 银行/贷款
+    bank_name           TEXT,
+    bank_account_no     TEXT,
+    loan_amount         TEXT,
+    loan_tenure         TEXT,
+    -- 审计
+    created_at          TEXT    DEFAULT (datetime('now')),
+    updated_at          TEXT    DEFAULT (datetime('now'))
+);
+
+-- ──────────────────────────────────────────────────────────────
 -- 内置同义词种子数据
 -- ──────────────────────────────────────────────────────────────
 

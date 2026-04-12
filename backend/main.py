@@ -30,10 +30,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional, Any
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Query
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import io
 
 logging.basicConfig(
     level=logging.INFO,
@@ -80,7 +81,10 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=[
+        "http://localhost:3000", "http://127.0.0.1:3000",
+        "http://localhost:3001", "http://127.0.0.1:3001",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -131,6 +135,79 @@ class SettingsUpdateRequest(BaseModel):
     fail_threshold: Optional[int] = None
     # 验证阈值
     verify_pixel_diff_threshold: Optional[float] = None
+
+
+# 客户 CRUD Pydantic 模型
+class CustomerCreate(BaseModel):
+    customer_id: str
+    full_name: str
+    ic_no: Optional[str] = None
+    date_of_birth: Optional[str] = None
+    nationality: Optional[str] = None
+    gender: Optional[str] = None
+    marital_status: Optional[str] = None
+    race: Optional[str] = None
+    religion: Optional[str] = None
+    mobile_no: Optional[str] = None
+    home_tel: Optional[str] = None
+    email: Optional[str] = None
+    address_line1: Optional[str] = None
+    address_line2: Optional[str] = None
+    address_line3: Optional[str] = None
+    postcode: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    country: Optional[str] = None
+    employer_name: Optional[str] = None
+    employer_address: Optional[str] = None
+    monthly_income: Optional[str] = None
+    annual_income: Optional[str] = None
+    occupation: Optional[str] = None
+    employment_type: Optional[str] = None
+    years_with_employer: Optional[str] = None
+    bank_name: Optional[str] = None
+    bank_account_no: Optional[str] = None
+    loan_amount: Optional[str] = None
+    loan_tenure: Optional[str] = None
+
+
+class CustomerUpdate(BaseModel):
+    customer_id: Optional[str] = None
+    full_name: Optional[str] = None
+    ic_no: Optional[str] = None
+    date_of_birth: Optional[str] = None
+    nationality: Optional[str] = None
+    gender: Optional[str] = None
+    marital_status: Optional[str] = None
+    race: Optional[str] = None
+    religion: Optional[str] = None
+    mobile_no: Optional[str] = None
+    home_tel: Optional[str] = None
+    email: Optional[str] = None
+    address_line1: Optional[str] = None
+    address_line2: Optional[str] = None
+    address_line3: Optional[str] = None
+    postcode: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    country: Optional[str] = None
+    employer_name: Optional[str] = None
+    employer_address: Optional[str] = None
+    monthly_income: Optional[str] = None
+    annual_income: Optional[str] = None
+    occupation: Optional[str] = None
+    employment_type: Optional[str] = None
+    years_with_employer: Optional[str] = None
+    bank_name: Optional[str] = None
+    bank_account_no: Optional[str] = None
+    loan_amount: Optional[str] = None
+    loan_tenure: Optional[str] = None
+
+
+class CustomerBulkRequest(BaseModel):
+    create: list[dict] = []
+    update: list[dict] = []
+    delete: list[int] = []
 
 # ──────────────────────────────────────────────────────────────
 #  Health
@@ -254,22 +331,131 @@ async def update_template_fields(template_id: int, req: FieldsUpdateRequest):
     return {"success": True, "updated_count": len(req.fields)}
 
 # ──────────────────────────────────────────────────────────────
-#  客户数据
+#  客户数据（数据库主数据源，支持 CRUD + 批量 + Excel 导入/导出）
 # ──────────────────────────────────────────────────────────────
 
+# NOTE: 具体路由（/customers/bulk, /customers/import-xlsx, /customers/export-xlsx）
+# 必须在 /customers/{id} 之前注册，否则 FastAPI 会把 literal 当为 path param。
+
 @app.get("/customers", tags=["Customers"])
-async def get_customers():
-    from modules.excel_reader import list_customers
-    return list_customers()
+async def get_customers(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=500),
+    q: Optional[str] = Query(None),
+):
+    """
+    分页查询客户列表（数据库主数据源）。
+    q: 搜索关键字，匹配 full_name / customer_id / ic_no / mobile_no
+    """
+    from modules.customer_store import list_customers
+    result = list_customers(page=page, page_size=page_size, q=q or None)
+    return {"success": True, "data": result}
+
+
+@app.post("/customers", tags=["Customers"])
+async def create_customer(req: CustomerCreate):
+    """新建客户，返回新建后的完整记录。"""
+    from modules.customer_store import create_customer as _create
+    try:
+        record = _create(
+            req.model_dump(exclude_none=True)
+            if hasattr(req, "model_dump")
+            else req.dict(exclude_none=True)
+        )
+        return {"success": True, "data": record}
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        if "UNIQUE constraint" in str(e):
+            raise HTTPException(status_code=409, detail=f"客户编号已存在")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/customers/bulk", tags=["Customers"])
+async def bulk_customers(req: CustomerBulkRequest):
+    """批量新建/更新/删除（AG Grid 一次性提交）。"""
+    from modules.customer_store import bulk_customers as _bulk
+    result = _bulk(
+        create_list=req.create,
+        update_list=req.update,
+        delete_ids=req.delete,
+    )
+    return {"success": True, "data": result}
+
+
+@app.post("/customers/import-xlsx", tags=["Customers"])
+async def import_customers_xlsx(file: UploadFile = File(...)):
+    """
+    上传 Excel，将内容以 upsert 模式导入 customers 表。
+    按 customer_id 做唯一键：已存在则更新，不存在则新建。
+    """
+    from modules.customer_store import import_from_xlsx
+    content = await file.read()
+    try:
+        result = import_from_xlsx(content, mode="upsert")
+        return {"success": True, "data": result}
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.get("/customers/export-xlsx", tags=["Customers"])
+async def export_customers_xlsx():
+    """导出当前客户列表为 Excel 文件（触发浏览器下载）。"""
+    from modules.customer_store import export_to_xlsx
+    try:
+        xlsx_bytes = export_to_xlsx()
+        return StreamingResponse(
+            io.BytesIO(xlsx_bytes),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": 'attachment; filename="customer_export.xlsx"',
+                "Content-Length": str(len(xlsx_bytes)),
+            },
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/customers/{customer_id}", tags=["Customers"])
 async def get_customer(customer_id: str):
-    from modules.excel_reader import get_customer as _get
-    data = _get(customer_id)
+    """
+    获取单个客户完整数据（按 customer_id 如 C001）。
+    返回带 customer.xxx 前缀的标准字段字典（供填表模块使用）。
+    """
+    from modules.customer_store import get_customer_by_cid
+    data = get_customer_by_cid(customer_id)
     if data is None:
         raise HTTPException(status_code=404, detail=f"客户 {customer_id} 不存在")
     return data
+
+
+@app.put("/customers/{record_id}", tags=["Customers"])
+async def update_customer(record_id: int, req: CustomerUpdate):
+    """按数据库主键 id 更新客户，返回更新后的完整记录。"""
+    from modules.customer_store import update_customer as _update, get_customer_raw
+    existing = get_customer_raw(record_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"客户 id={record_id} 不存在")
+    data = (
+        req.model_dump(exclude_none=True)
+        if hasattr(req, "model_dump")
+        else req.dict(exclude_none=True)
+    )
+    try:
+        record = _update(record_id, data)
+        return {"success": True, "data": record}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/customers/{record_id}", tags=["Customers"])
+async def delete_customer(record_id: int):
+    """删除指定 id 的客户记录。"""
+    from modules.customer_store import delete_customer as _delete
+    ok = _delete(record_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"客户 id={record_id} 不存在")
+    return {"success": True}
 
 # ──────────────────────────────────────────────────────────────
 #  填表执行（PRD v3 严格版）
@@ -290,7 +476,14 @@ async def fill_form(req: FillFormRequest):
       - verifier 异常 → 整体 fail（不 fallback 到 pass）
       - 响应字段只有 pass/fail 计数，无 warning/manual
     """
-    from modules.excel_reader import get_customer as _get_customer
+    # 优先从数据库获取客户，回退到 Excel
+    from modules.customer_store import get_customer_by_cid as _get_customer_db
+    from modules.excel_reader import get_customer as _get_customer_excel
+    def _get_customer(cid):
+        result = _get_customer_db(cid)
+        if result is None:
+            result = _get_customer_excel(cid)
+        return result
     from modules.template_store import (
         get_template as _get_template, resolve_original_pdf,
         create_fill_job, update_fill_job,

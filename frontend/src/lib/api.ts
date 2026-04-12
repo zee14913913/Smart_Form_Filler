@@ -65,11 +65,57 @@ export interface UploadFormResponse {
   fields: Field[];
 }
 
+/** 数据库客户记录（完整字段） */
 export interface Customer {
-  customer_id: string;
+  id: number;            // DB 主键
+  customer_id: string;   // 业务编号，如 C001
   full_name: string;
   ic_no: string;
-  mobile_no: string;
+  date_of_birth?: string;
+  nationality?: string;
+  gender?: string;
+  marital_status?: string;
+  race?: string;
+  religion?: string;
+  mobile_no?: string;
+  home_tel?: string;
+  email?: string;
+  address_line1?: string;
+  address_line2?: string;
+  address_line3?: string;
+  postcode?: string;
+  city?: string;
+  state?: string;
+  country?: string;
+  employer_name?: string;
+  employer_address?: string;
+  monthly_income?: string;
+  annual_income?: string;
+  occupation?: string;
+  employment_type?: string;
+  years_with_employer?: string;
+  bank_name?: string;
+  bank_account_no?: string;
+  loan_amount?: string;
+  loan_tenure?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface CustomerListResponse {
+  success: boolean;
+  data: {
+    items: Customer[];
+    total: number;
+    page: number;
+    page_size: number;
+  };
+}
+
+export interface CustomerBulkPayload {
+  create: Partial<Customer>[];
+  update: Partial<Customer>[];
+  delete: number[];
 }
 
 /** PRD v3：只有 pass / fail，无 warning / manual */
@@ -179,14 +225,54 @@ export async function updateFields(
   await api.put(`/templates/${templateId}/fields`, { fields });
 }
 
-export async function getCustomers(): Promise<Customer[]> {
-  const res = await api.get<Customer[]>('/customers');
+export async function getCustomers(
+  page = 1,
+  pageSize = 200,
+  q?: string,
+): Promise<CustomerListResponse> {
+  const params: Record<string, string | number> = { page, page_size: pageSize };
+  if (q) params.q = q;
+  const res = await api.get<CustomerListResponse>('/customers', { params });
   return res.data;
 }
 
 export async function getCustomer(id: string): Promise<Record<string, string>> {
   const res = await api.get<Record<string, string>>(`/customers/${id}`);
   return res.data;
+}
+
+export async function createCustomer(data: Partial<Customer>): Promise<Customer> {
+  const res = await api.post<{ success: boolean; data: Customer }>('/customers', data);
+  return res.data.data;
+}
+
+export async function updateCustomer(id: number, data: Partial<Customer>): Promise<Customer> {
+  const res = await api.put<{ success: boolean; data: Customer }>(`/customers/${id}`, data);
+  return res.data.data;
+}
+
+export async function deleteCustomer(id: number): Promise<void> {
+  await api.delete(`/customers/${id}`);
+}
+
+export async function bulkCustomers(payload: CustomerBulkPayload): Promise<{
+  created: number; updated: number; deleted: number; errors: unknown[];
+}> {
+  const res = await api.post<{ success: boolean; data: { created: number; updated: number; deleted: number; errors: unknown[] } }>('/customers/bulk', payload);
+  return res.data.data;
+}
+
+export async function importCustomersXlsx(file: File): Promise<{
+  imported: number; skipped: number; errors: unknown[];
+}> {
+  const formData = new FormData();
+  formData.append('file', file);
+  const res = await api.post<{ success: boolean; data: { imported: number; skipped: number; errors: unknown[] } }>('/customers/import-xlsx', formData);
+  return res.data.data;
+}
+
+export function getCustomerExportUrl(): string {
+  return `${BASE_URL}/customers/export-xlsx`;
 }
 
 export async function fillForm(

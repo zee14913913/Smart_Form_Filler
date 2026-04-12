@@ -177,7 +177,7 @@ function FillFormContent() {
 
   useEffect(() => {
     Promise.all([getTemplates(), getCustomers()])
-      .then(([t, c]) => { setTemplates(t); setCustomers(c); })
+      .then(([t, c]) => { setTemplates(t); setCustomers(c.data?.items ?? []); })
       .catch(() => setError('无法连接后端服务，请确认 FastAPI 正在运行'))
       .finally(() => setLoading(false));
   }, []);

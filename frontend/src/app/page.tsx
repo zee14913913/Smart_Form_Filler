@@ -30,7 +30,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     Promise.all([getTemplates(), getCustomers(), getJobs(10)])
-      .then(([t, c, j]) => { setTemplates(t); setCustomers(c); setJobs(j); })
+      .then(([t, c, j]) => { setTemplates(t); setCustomers(c.data?.items ?? []); setJobs(j); })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
