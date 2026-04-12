@@ -34,3 +34,11 @@ Thumbs.db
 .idea/
 .vscode/
 *.iml
+
+# 运行时生成的原件存档（原件 PDF）
+backend/data/forms/*/
+!backend/data/forms/.gitkeep
+!backend/data/.gitkeep
+
+# SQLite DB（运行时生成）
+backend/database/templates.db

@@ -1,13 +1,75 @@
 'use client';
 
-import { useState } from 'react';
-import { addSynonym } from '@/lib/api';
+import { useState, useEffect } from 'react';
+import { addSynonym, getSettings, updateSettings, SystemSettings } from '@/lib/api';
+
+const STANDARD_KEYS = [
+  'customer.full_name', 'customer.ic_no', 'customer.date_of_birth',
+  'customer.nationality', 'customer.gender', 'customer.marital_status',
+  'customer.race', 'customer.religion', 'customer.mobile_no',
+  'customer.home_tel', 'customer.email',
+  'customer.address_line1', 'customer.address_line2', 'customer.address_line3',
+  'customer.postcode', 'customer.city', 'customer.state',
+  'customer.employer_name', 'customer.monthly_income',
+  'customer.annual_income', 'customer.occupation',
+  'customer.employment_type', 'customer.bank_name',
+  'customer.loan_amount', 'customer.loan_tenure',
+];
+
+// ── 只读标签 ───────────────────────────────────────────────────
+function ReadonlyRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between" style={{ paddingBottom: 8, borderBottom: '1px solid #E8E4DE', marginBottom: 8 }}>
+      <span className="form-label" style={{ margin: 0 }}>{label}</span>
+      <span style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--ink)' }}>{value}</span>
+    </div>
+  );
+}
 
 export default function SettingsPage() {
-  const [synKey, setSynKey] = useState('');
-  const [synValue, setSynValue] = useState('');
-  const [synSaving, setSynSaving] = useState(false);
-  const [synMsg, setSynMsg] = useState('');
+  const [settings, setSettings]         = useState<SystemSettings | null>(null);
+  const [loadingSettings, setLoading]   = useState(true);
+  const [saving, setSaving]             = useState(false);
+  const [saveMsg, setSaveMsg]           = useState('');
+
+  // 同义词
+  const [synKey, setSynKey]             = useState('');
+  const [synValue, setSynValue]         = useState('');
+  const [synSaving, setSynSaving]       = useState(false);
+  const [synMsg, setSynMsg]             = useState('');
+
+  // 本地编辑草稿
+  const [draft, setDraft]               = useState<Partial<SystemSettings>>({});
+
+  useEffect(() => {
+    getSettings()
+      .then(s => { setSettings(s); setDraft({}); })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const field = <K extends keyof SystemSettings>(key: K) =>
+    ((draft as SystemSettings)[key] ?? settings?.[key]) as SystemSettings[K];
+
+  const setField = <K extends keyof SystemSettings>(key: K, val: SystemSettings[K]) => {
+    setDraft(d => ({ ...d, [key]: val }));
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setSaveMsg('');
+    try {
+      const updated = await updateSettings(draft as Parameters<typeof updateSettings>[0]);
+      setSettings(updated);
+      setDraft({});
+      setSaveMsg('✓ 配置已保存');
+    } catch {
+      setSaveMsg('✕ 保存失败，请检查后端服务');
+    } finally {
+      setSaving(false);
+      setTimeout(() => setSaveMsg(''), 4000);
+    }
+  };
 
   const handleAddSynonym = async () => {
     if (!synKey || !synValue) return;
@@ -15,88 +77,229 @@ export default function SettingsPage() {
     setSynMsg('');
     try {
       await addSynonym(synKey, synValue);
-      setSynMsg('✓ Synonym added successfully');
+      setSynMsg('✓ 同义词已添加');
       setSynValue('');
     } catch {
-      setSynMsg('✕ Failed to add synonym');
+      setSynMsg('✕ 添加失败');
     } finally {
       setSynSaving(false);
       setTimeout(() => setSynMsg(''), 3000);
     }
   };
 
+  const hasDraft = Object.keys(draft).length > 0;
+
   return (
     <div className="page-settings">
       <div className="page-header">
         <h1 className="page-title">Settings</h1>
-        <p className="page-subtitle">系统配置、字段字典管理、同义词设置</p>
+        <p className="page-subtitle">全局配置、渲染策略、字段字典、同义词管理</p>
       </div>
 
       <div className="settings-grid">
 
-        {/* ── 系统信息 ── */}
+        {/* ── 渲染策略（固定只读）─────────────────────────────── */}
         <div className="settings-card settings-card--focus">
-          <div className="settings-card__title">System Info</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {[
-              ['Backend', 'FastAPI (Python 3.10+)'],
-              ['Frontend', 'Next.js 14 (TypeScript)'],
-              ['Database', 'SQLite (templates.db)'],
-              ['PDF Engine', 'pdfplumber + ReportLab + pypdf'],
-              ['OCR Engine', 'pytesseract + OpenCV'],
-              ['API Port', 'http://localhost:8000'],
-              ['Frontend Port', 'http://localhost:3000'],
-            ].map(([label, value]) => (
-              <div key={label} className="flex items-center justify-between">
-                <span className="form-label" style={{ margin: 0 }}>{label}</span>
-                <span style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--ink)' }}>{value}</span>
-              </div>
-            ))}
+          <div className="settings-card__title">渲染策略（Render Strategy）</div>
+          <p className="caption mb-4" style={{ color: 'var(--danger)', fontWeight: 600 }}>
+            以下为系统硬性约束，不可修改。任何违反此策略的输出均视为严重违例。
+          </p>
+          <ReadonlyRow label="render_base" value="original_pdf  ✓  固定不可改" />
+          <ReadonlyRow label="allow_custom_drawn_templates" value="false  —  禁止自绘表格" />
+          <ReadonlyRow label="allow_modify_original_content" value="false  —  禁止修改原件" />
+          <div style={{ marginTop: 12, background: 'rgba(74,63,107,0.06)', borderRadius: 6, padding: '10px 14px', fontSize: 11, color: 'var(--vd)' }}>
+            输出 PDF 必须以上传的原件为底板，仅在空白格子位置叠字。
+            严禁用 HTML / CSS / Canvas 重绘表格后导出。
           </div>
         </div>
 
-        {/* ── 字段同义词 ── */}
+        {/* ── 字体与排版（可编辑）─────────────────────────────── */}
         <div className="settings-card">
-          <div className="settings-card__title">Field Synonyms</div>
+          <div className="settings-card__title">字体与排版</div>
+          {loadingSettings ? (
+            <div className="flex items-center gap-2"><div className="loading-spinner" /><span className="caption">加载中...</span></div>
+          ) : (
+            <>
+              <div className="form-group">
+                <label className="form-label">默认字体 (default_font_name)</label>
+                <select
+                  className="form-select"
+                  value={field('default_font_name')}
+                  onChange={e => setField('default_font_name', e.target.value)}
+                >
+                  <option value="Helvetica">Helvetica（内置，ASCII）</option>
+                  <option value="Times-Roman">Times-Roman（内置）</option>
+                  <option value="Courier">Courier（内置，等宽）</option>
+                  <option value="NotoSansSC">NotoSansSC（需手动安装 TTF）</option>
+                </select>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+                <div className="form-group">
+                  <label className="form-label">最大字号 (max)</label>
+                  <input type="number" className="form-input" step="0.5" min="6" max="24"
+                    value={field('default_font_size_max')}
+                    onChange={e => setField('default_font_size_max', Number(e.target.value))} />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">最小字号 (min)</label>
+                  <input type="number" className="form-input" step="0.5" min="4" max="12"
+                    value={field('default_font_size_min')}
+                    onChange={e => setField('default_font_size_min', Number(e.target.value))} />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">步进 (step)</label>
+                  <input type="number" className="form-input" step="0.5" min="0.5" max="2"
+                    value={field('default_font_size_step')}
+                    onChange={e => setField('default_font_size_step', Number(e.target.value))} />
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* ── Padding 与垂直策略 ───────────────────────────────── */}
+        <div className="settings-card">
+          <div className="settings-card__title">Padding 与垂直策略</div>
+          {!loadingSettings && (
+            <>
+              <div className="form-group">
+                <label className="form-label">左侧留白 default_left_padding_px（pt）</label>
+                <input type="number" className="form-input" step="0.5" min="0" max="20"
+                  value={field('default_left_padding_px')}
+                  onChange={e => setField('default_left_padding_px', Number(e.target.value))} />
+                <p className="caption mt-1">文字起始 x = cell_x0 + 此值</p>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">垂直策略 default_vertical_strategy</label>
+                <select className="form-select"
+                  value={field('default_vertical_strategy')}
+                  onChange={e => setField('default_vertical_strategy', e.target.value)}>
+                  <option value="center_baseline">center_baseline（垂直居中，推荐）</option>
+                  <option value="top">top（贴格子顶部）</option>
+                  <option value="custom_offset">custom_offset（自定义偏移）</option>
+                </select>
+              </div>
+
+              {field('default_vertical_strategy') === 'custom_offset' && (
+                <div className="form-group">
+                  <label className="form-label">自定义偏移 (pt)</label>
+                  <input type="number" className="form-input" step="1" min="-20" max="20"
+                    value={field('default_custom_offset')}
+                    onChange={e => setField('default_custom_offset', Number(e.target.value))} />
+                </div>
+              )}
+
+              <div className="form-group">
+                <label className="form-label">默认对齐 default_text_align</label>
+                <select className="form-select"
+                  value={field('default_text_align')}
+                  onChange={e => setField('default_text_align', e.target.value)}>
+                  <option value="left">left（左对齐，默认）</option>
+                  <option value="center">center（居中）</option>
+                  <option value="right">right（右对齐）</option>
+                </select>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* ── 溢出策略 ─────────────────────────────────────────── */}
+        <div className="settings-card">
+          <div className="settings-card__title">溢出策略（Overflow Policy）</div>
+          {!loadingSettings && (
+            <>
+              <div className="form-group">
+                <label className="form-label">溢出处理方式</label>
+                <select className="form-select"
+                  value={field('overflow_policy')}
+                  onChange={e => setField('overflow_policy', e.target.value)}>
+                  <option value="mark_manual_without_writing">
+                    mark_manual_without_writing（不写入，标记 manual）
+                  </option>
+                  <option value="write_visible_part_and_mark_manual">
+                    write_visible_part_and_mark_manual（写入最小字号并标记 manual）
+                  </option>
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">字符数阈值 manual_threshold</label>
+                <input type="number" className="form-input" step="5" min="10" max="500"
+                  value={field('manual_threshold')}
+                  onChange={e => setField('manual_threshold', Number(e.target.value))} />
+                <p className="caption mt-1">超过此字符数的字段直接标记 manual，不尝试收缩字号</p>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* ── 验证阈值 ─────────────────────────────────────────── */}
+        <div className="settings-card">
+          <div className="settings-card__title">验证阈值（Verification）</div>
+          {!loadingSettings && (
+            <div className="form-group">
+              <label className="form-label">图像差分阈值 verify_pixel_diff_threshold</label>
+              <input type="number" className="form-input" step="0.005" min="0.001" max="0.1"
+                value={field('verify_pixel_diff_threshold')}
+                onChange={e => setField('verify_pixel_diff_threshold', Number(e.target.value))} />
+              <p className="caption mt-1">
+                非填写区域像素差异超过此比例时，视为原件被篡改（fail）。默认 0.02 = 2%。
+              </p>
+            </div>
+          )}
+          {!loadingSettings && settings?.updated_at && (
+            <p className="caption" style={{ marginTop: 8 }}>
+              上次更新：{settings.updated_at}
+            </p>
+          )}
+        </div>
+
+        {/* ── 保存按钮区 ───────────────────────────────────────── */}
+        <div className="settings-card" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+          <div className="settings-card__title">保存配置</div>
           <p className="caption mb-4">
-            添加自定义字段同义词，帮助系统更准确地识别表格标签与标准字段的对应关系。
+            修改以上可编辑项后，点击保存。渲染策略字段固定不接受修改。
+          </p>
+          {saveMsg && (
+            <p style={{
+              fontSize: 12, marginBottom: 10,
+              color: saveMsg.startsWith('✓') ? 'var(--success)' : 'var(--danger)',
+            }}>{saveMsg}</p>
+          )}
+          <button
+            className="btn btn--primary w-full"
+            onClick={handleSave}
+            disabled={!hasDraft || saving || loadingSettings}
+            style={{ justifyContent: 'center' }}
+          >
+            {saving ? 'Saving...' : hasDraft ? 'Save Settings' : 'No Changes'}
+          </button>
+        </div>
+
+        {/* ── 同义词管理 ───────────────────────────────────────── */}
+        <div className="settings-card">
+          <div className="settings-card__title">字段同义词管理</div>
+          <p className="caption mb-4">
+            添加同义词帮助系统将表格标签自动映射到标准字段键。
           </p>
           <div className="form-group">
             <label className="form-label">Standard Key</label>
-            <select
-              className="form-select"
-              value={synKey}
-              onChange={e => setSynKey(e.target.value)}
-            >
+            <select className="form-select" value={synKey} onChange={e => setSynKey(e.target.value)}>
               <option value="">— Select standard key —</option>
-              {[
-                'customer.full_name', 'customer.ic_no', 'customer.date_of_birth',
-                'customer.nationality', 'customer.gender', 'customer.marital_status',
-                'customer.race', 'customer.religion', 'customer.mobile_no',
-                'customer.home_tel', 'customer.email',
-                'customer.address_line1', 'customer.address_line2',
-                'customer.postcode', 'customer.city', 'customer.state',
-                'customer.employer_name', 'customer.monthly_income',
-                'customer.annual_income', 'customer.occupation',
-                'customer.employment_type', 'customer.bank_name',
-                'customer.loan_amount', 'customer.loan_tenure',
-              ].map(k => <option key={k} value={k}>{k}</option>)}
+              {STANDARD_KEYS.map(k => <option key={k} value={k}>{k}</option>)}
             </select>
           </div>
           <div className="form-group">
             <label className="form-label">Synonym / Alias</label>
-            <input
-              className="form-input"
-              placeholder="例如：Nama Pemohon / 申请人全名"
-              value={synValue}
-              onChange={e => setSynValue(e.target.value)}
-            />
+            <input className="form-input" placeholder="例如：Nama Pemohon / 申请人全名"
+              value={synValue} onChange={e => setSynValue(e.target.value)} />
           </div>
           {synMsg && (
-            <p style={{
-              fontSize: 11, marginBottom: 10,
-              color: synMsg.startsWith('✓') ? 'var(--success)' : 'var(--danger)'
-            }}>{synMsg}</p>
+            <p style={{ fontSize: 11, marginBottom: 10, color: synMsg.startsWith('✓') ? 'var(--success)' : 'var(--danger)' }}>
+              {synMsg}
+            </p>
           )}
           <button
             className="btn btn--primary w-full"
@@ -108,83 +311,34 @@ export default function SettingsPage() {
           </button>
         </div>
 
-        {/* ── 填表规则 ── */}
+        {/* ── 系统信息 ─────────────────────────────────────────── */}
         <div className="settings-card">
-          <div className="settings-card__title">Fill Rules (Read-only)</div>
-          <p className="caption mb-4">当前系统采用的精准回填规则（按蓝图设计）</p>
-          {[
-            ['Left Padding', '1 × font_size (一个字宽)'],
-            ['Vertical Align', 'Centered within cell'],
-            ['Font Range', '10pt → 6pt (step: 0.5pt)'],
-            ['Right Margin', '2 pt safety margin'],
-            ['Overflow Action', 'Mark as "needs_manual"'],
-            ['Text Align', 'Left (default), Center, Right'],
-            ['Overlay Method', 'ReportLab → merge via pypdf'],
-          ].map(([label, value]) => (
-            <div key={label} className="flex items-center justify-between" style={{ paddingBottom: 8, borderBottom: '1px solid #E8E4DE', marginBottom: 8 }}>
-              <span className="form-label" style={{ margin: 0 }}>{label}</span>
-              <span style={{ fontSize: 11, color: 'var(--ink)' }}>{value}</span>
-            </div>
-          ))}
-        </div>
-
-        {/* ── 快速导航 ── */}
-        <div className="settings-card">
-          <div className="settings-card__title">Quick Links</div>
+          <div className="settings-card__title">System Info</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {[
+              ['Backend', 'FastAPI (Python 3.10+)'],
+              ['Frontend', 'Next.js 14 (TypeScript)'],
+              ['Database', 'SQLite (templates.db)'],
+              ['PDF Engine', 'pdfplumber + ReportLab + pypdf'],
+              ['Verifier', 'verifier.py (field + image diff)'],
+              ['API Port', 'http://localhost:8000'],
+              ['Frontend Port', 'http://localhost:3000'],
+            ].map(([label, value]) => (
+              <div key={label} className="flex items-center justify-between">
+                <span className="form-label" style={{ margin: 0 }}>{label}</span>
+                <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--ink)' }}>{value}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
             <a href="http://localhost:8000/docs" target="_blank" rel="noreferrer"
               className="btn btn--secondary w-full" style={{ justifyContent: 'center' }}>
-              <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/>
-                <polyline points="15 3 21 3 21 9"/>
-                <line x1="10" y1="14" x2="21" y2="3"/>
-              </svg>
-              FastAPI Swagger Docs
-            </a>
-            <a href="http://localhost:8000/redoc" target="_blank" rel="noreferrer"
-              className="btn btn--secondary w-full" style={{ justifyContent: 'center' }}>
-              API ReDoc
+              Swagger API Docs
             </a>
             <a href="/templates" className="btn btn--secondary w-full" style={{ justifyContent: 'center' }}>
               Manage Templates
             </a>
-            <a href="/customers" className="btn btn--secondary w-full" style={{ justifyContent: 'center' }}>
-              View Customers
-            </a>
           </div>
-        </div>
-
-        {/* ── 文件目录 ── */}
-        <div className="settings-card" style={{ gridColumn: '1 / -1' }}>
-          <div className="settings-card__title">Project Directory Structure</div>
-          <pre style={{
-            fontFamily: 'var(--font-mono)',
-            fontSize: 11,
-            lineHeight: 1.8,
-            color: 'var(--ink)',
-            background: '#F8F6F2',
-            padding: 16,
-            borderRadius: 'var(--radius)',
-            border: '1px solid #E8E4DE',
-            overflow: 'auto',
-          }}>{`Smart_Form_Filler/
-├── backend/
-│   ├── main.py                  # FastAPI 入口
-│   ├── requirements.txt         # Python 依赖
-│   ├── modules/
-│   │   ├── analyzer.py          # PDF/图片字段分析
-│   │   ├── field_normalizer.py  # 字段标准化 (rapidfuzz)
-│   │   ├── template_store.py    # SQLite CRUD
-│   │   ├── excel_reader.py      # 客户 Excel 读取
-│   │   └── filler.py            # PDF 精准回填
-│   ├── database/
-│   │   ├── templates.db         # SQLite 模板库
-│   │   └── init_db.sql          # 初始化脚本
-│   ├── uploads/                 # 上传的原始 PDF
-│   └── outputs/                 # 生成的填写 PDF
-├── frontend/                    # Next.js 前端
-├── customer_master.xlsx         # 客户主资料
-└── README.md`}</pre>
         </div>
 
       </div>

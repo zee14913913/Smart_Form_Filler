@@ -1,21 +1,21 @@
 """
-main.py — FastAPI 入口
-----------------------
-启动方式：
-  cd backend
-  uvicorn main:app --reload --port 8000
-
+main.py — FastAPI 入口 (v2)
+----------------------------
 API 列表：
-  POST /upload-form                        上传 PDF，分析字段，创建模板
-  GET  /templates                          列出所有模板
-  GET  /templates/{template_id}            读取模板详情（含字段列表）
-  PUT  /templates/{template_id}/fields     批量更新字段映射/排版参数
-  GET  /customers                          从 Excel 读取客户列表
-  GET  /customers/{customer_id}            读取单个客户完整数据
-  POST /fill-form                          执行填表，返回下载链接
-  GET  /download/{filename}               下载已生成的 PDF
-  GET  /standard-keys                     返回所有标准字段键列表
-  POST /synonyms                          添加自定义同义词
+  POST /upload-form                      上传 PDF，分析字段，创建模板
+  GET  /templates                        列出所有模板
+  GET  /templates/{id}                   模板详情（含字段）
+  PUT  /templates/{id}/fields            批量更新字段映射
+  GET  /customers                        客户列表
+  GET  /customers/{id}                   单个客户完整数据
+  POST /fill-form                        执行填表（含验证，写入 fill_jobs）
+  GET  /download/{filename}              下载填好的 PDF
+  GET  /jobs                             最近填表任务列表
+  GET  /jobs/{job_id}                    任务详情（含字段级结果）
+  GET  /settings                         读取全局配置
+  POST /settings                         更新全局配置（只读字段被忽略）
+  GET  /standard-keys                    所有标准字段键
+  POST /synonyms                         添加同义词
 """
 
 import os
@@ -23,16 +23,12 @@ import uuid
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form, BackgroundTasks
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-
-# ──────────────────────────────────────────────────────────────
-#  日志
-# ──────────────────────────────────────────────────────────────
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,37 +40,38 @@ logger = logging.getLogger("main")
 #  路径常量
 # ──────────────────────────────────────────────────────────────
 
-BASE_DIR = Path(__file__).parent
+BASE_DIR    = Path(__file__).parent
 UPLOADS_DIR = BASE_DIR / "uploads"
 OUTPUTS_DIR = BASE_DIR / "outputs"
 UPLOADS_DIR.mkdir(exist_ok=True)
 OUTPUTS_DIR.mkdir(exist_ok=True)
 
 # ──────────────────────────────────────────────────────────────
-#  Lifespan (replaces deprecated @app.on_event)
+#  Lifespan（替代已弃用的 @app.on_event）
 # ──────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用启动时初始化 SQLite 数据库（使用现代 lifespan 模式）"""
     from modules.template_store import init_database
     init_database()
     logger.info("数据库初始化完成")
     yield
-    # shutdown cleanup (if needed in future)
 
 # ──────────────────────────────────────────────────────────────
-#  App 初始化
+#  App
 # ──────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="Smart Form Filler API",
-    description="智能表格自动填写系统后端 API",
-    version="1.0.0",
+    description=(
+        "智能表格自动填写系统后端 API\n\n"
+        "核心约束：输出 PDF 必须以原件为底板，在原件上叠字。\n"
+        "render_base = original_pdf（固定，不可修改）。"
+    ),
+    version="2.0.0",
     lifespan=lifespan,
 )
 
-# 允许前端 Next.js dev server 跨域访问
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -83,9 +80,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 # ──────────────────────────────────────────────────────────────
-#  Pydantic 数据模型
+#  Pydantic 模型
 # ──────────────────────────────────────────────────────────────
 
 class FieldUpdate(BaseModel):
@@ -98,31 +94,50 @@ class FieldUpdate(BaseModel):
     is_confirmed: Optional[int] = None
     raw_label: Optional[str] = None
 
-
 class FieldsUpdateRequest(BaseModel):
     fields: list[FieldUpdate]
-
 
 class FillFormRequest(BaseModel):
     template_id: int
     customer_id: str
 
-
 class SynonymRequest(BaseModel):
     standard_key: str
     synonym: str
 
+class SettingsUpdateRequest(BaseModel):
+    # 字体
+    default_font_name: Optional[str] = None
+    default_font_size_max: Optional[float] = None
+    default_font_size_min: Optional[float] = None
+    default_font_size_step: Optional[float] = None
+    # Padding
+    default_left_padding_px: Optional[float] = None
+    default_vertical_strategy: Optional[str] = None
+    default_custom_offset: Optional[float] = None
+    # 对齐与多行
+    default_text_align: Optional[str] = None
+    default_multiline_behavior: Optional[str] = None
+    # 溢出
+    overflow_policy: Optional[str] = None
+    manual_threshold: Optional[int] = None
+    # 验证阈值
+    verify_pixel_diff_threshold: Optional[float] = None
 
 # ──────────────────────────────────────────────────────────────
-#  API 路由
+#  Health
 # ──────────────────────────────────────────────────────────────
 
 @app.get("/", tags=["Health"])
 async def root():
-    return {"status": "ok", "message": "Smart Form Filler API is running"}
+    return {
+        "status" : "ok",
+        "message": "Smart Form Filler API v2 — render_base=original_pdf",
+    }
 
-
-# ── 上传表格 ──────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────
+#  上传表格
+# ──────────────────────────────────────────────────────────────
 
 @app.post("/upload-form", tags=["Templates"])
 async def upload_form(
@@ -131,44 +146,40 @@ async def upload_form(
     institution: str = Form(""),
 ):
     """
-    上传 PDF/图片表格文件，自动分析字段，创建模板记录。
-
-    返回：
-      template_id, template_name, fields（字段列表含坐标和初步映射）
+    上传 PDF，分析字段，创建模板。
+    原件 PDF 同时保存到 uploads/ 和 data/forms/{id}/original.pdf。
     """
-    # 1. 保存上传文件
-    suffix = Path(file.filename).suffix.lower()
+    suffix        = Path(file.filename).suffix.lower()
     safe_filename = f"{uuid.uuid4().hex}{suffix}"
-    save_path = UPLOADS_DIR / safe_filename
+    upload_path   = UPLOADS_DIR / safe_filename
 
     try:
         content = await file.read()
-        with open(save_path, "wb") as f:
+        with open(upload_path, "wb") as f:
             f.write(content)
-        logger.info(f"文件已保存：{save_path}")
+        logger.info(f"文件已保存：{upload_path}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"文件保存失败：{e}")
 
-    # 2. 分析字段
+    # 分析字段
     try:
         from modules.analyzer import analyze_pdf
-        fields = analyze_pdf(str(save_path))
-        logger.info(f"字段分析完成，共 {len(fields)} 个字段")
+        fields = analyze_pdf(str(upload_path))
+        logger.info(f"字段分析完成：{len(fields)} 个")
     except Exception as e:
         logger.error(f"字段分析失败：{e}")
-        # 分析失败时仍创建模板，但字段列表为空（用户可手动配置）
         fields = []
 
-    # 3. 字段标准化
+    # 标准化
     try:
         from modules.field_normalizer import normalize_fields
         fields = normalize_fields(fields)
     except Exception as e:
         logger.warning(f"字段标准化失败：{e}")
 
-    # 4. 创建模板记录
-    from modules.template_store import create_template, save_fields
-    name = template_name or Path(file.filename).stem
+    # 创建模板
+    from modules.template_store import create_template, save_fields, copy_to_forms_dir
+    name       = template_name or Path(file.filename).stem
     page_count = max((f.get("page_number", 1) for f in fields), default=1)
     template_id = create_template(
         name=name,
@@ -177,34 +188,39 @@ async def upload_form(
         page_count=page_count,
     )
 
-    # 5. 保存字段
+    # 将原件复制到规范路径 data/forms/{id}/original.pdf
+    try:
+        original_path = copy_to_forms_dir(template_id, str(upload_path))
+        logger.info(f"原件已存档：{original_path}")
+    except Exception as e:
+        logger.warning(f"原件存档失败（不影响功能）：{e}")
+
     if fields:
         save_fields(template_id, fields)
 
     return {
-        "template_id": template_id,
+        "template_id"  : template_id,
         "template_name": name,
-        "institution": institution,
-        "page_count": page_count,
-        "field_count": len(fields),
-        "fields": fields,
+        "institution"  : institution,
+        "page_count"   : page_count,
+        "field_count"  : len(fields),
+        "fields"       : fields,
     }
 
-
-# ── 模板列表 ──────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────
+#  模板 CRUD
+# ──────────────────────────────────────────────────────────────
 
 @app.get("/templates", tags=["Templates"])
 async def get_templates():
-    """返回所有模板列表"""
     from modules.template_store import list_templates
     return list_templates()
 
 
 @app.get("/templates/{template_id}", tags=["Templates"])
 async def get_template(template_id: int):
-    """返回单个模板及其所有字段"""
-    from modules.template_store import get_template as _get_template, get_fields
-    template = _get_template(template_id)
+    from modules.template_store import get_template as _get, get_fields
+    template = _get(template_id)
     if not template:
         raise HTTPException(status_code=404, detail="模板不存在")
     fields = get_fields(template_id)
@@ -213,100 +229,170 @@ async def get_template(template_id: int):
 
 @app.put("/templates/{template_id}/fields", tags=["Templates"])
 async def update_template_fields(template_id: int, req: FieldsUpdateRequest):
-    """批量更新字段映射与排版参数"""
-    from modules.template_store import update_field
+    from modules.template_store import update_field, update_template_status, get_template
     for upd in req.fields:
-        # Use model_dump (Pydantic v2) with fallback to dict (Pydantic v1)
-        data = upd.model_dump(exclude_none=True) if hasattr(upd, 'model_dump') else upd.dict(exclude_none=True)
+        data = (
+            upd.model_dump(exclude_none=True)
+            if hasattr(upd, "model_dump")
+            else upd.dict(exclude_none=True)
+        )
         fid = data.pop("id")
         if data:
             update_field(fid, data)
+    # 若模板仍是 draft，更新为 confirmed
+    template = get_template(template_id)
+    if template and template.get("status") == "draft":
+        update_template_status(template_id, "confirmed")
     return {"success": True, "updated_count": len(req.fields)}
 
-
-# ── 客户数据 ──────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────
+#  客户数据
+# ──────────────────────────────────────────────────────────────
 
 @app.get("/customers", tags=["Customers"])
 async def get_customers():
-    """从 customer_master.xlsx 读取客户列表"""
     from modules.excel_reader import list_customers
-    customers = list_customers()
-    return customers
+    return list_customers()
 
 
 @app.get("/customers/{customer_id}", tags=["Customers"])
 async def get_customer(customer_id: str):
-    """读取单个客户的完整数据"""
-    from modules.excel_reader import get_customer as _get_customer
-    data = _get_customer(customer_id)
+    from modules.excel_reader import get_customer as _get
+    data = _get(customer_id)
     if data is None:
         raise HTTPException(status_code=404, detail=f"客户 {customer_id} 不存在")
     return data
 
-
-# ── 填表执行 ──────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────
+#  填表执行（Phase 2 + 4）
+# ──────────────────────────────────────────────────────────────
 
 @app.post("/fill-form", tags=["Fill"])
 async def fill_form(req: FillFormRequest):
     """
     执行填表：
-      1. 读取模板与客户数据
-      2. 调用 filler.fill_pdf()
-      3. 返回输出文件的下载链接
-
-    返回：
-      {
-          "download_url": "/download/{filename}",
-          "filled_count": int,
-          "manual_count": int,
-          "manual_fields": [...],
-          ...
-      }
+      1. 读取模板 original_pdf_path（在原件上叠字）
+      2. 写入 fill_jobs 记录
+      3. 调用 filler.fill_pdf()
+      4. 调用 verifier.verify_job()
+      5. 返回包含验证摘要的完整结果
     """
-    # 获取客户数据
     from modules.excel_reader import get_customer as _get_customer
+    from modules.template_store import (
+        get_template as _get_template, resolve_original_pdf,
+        create_fill_job, update_fill_job,
+    )
+    from modules.verifier import verify_job
+
+    # 验证客户
     customer_data = _get_customer(req.customer_id)
     if customer_data is None:
         raise HTTPException(status_code=404, detail=f"客户 {req.customer_id} 不存在")
 
-    # 确认模板存在
-    from modules.template_store import get_template as _get_template
+    # 验证模板
     template = _get_template(req.template_id)
     if not template:
         raise HTTPException(status_code=404, detail=f"模板 {req.template_id} 不存在")
 
-    # 推断源 PDF 路径
-    source_pdf_path = str(UPLOADS_DIR / template["source_filename"])
+    # 确定原件路径
+    original_pdf = resolve_original_pdf(template)
+    if not original_pdf:
+        raise HTTPException(
+            status_code=404,
+            detail=f"原件 PDF 不存在（template_id={req.template_id}）。请重新上传模板。"
+        )
 
-    # 生成输出文件名
+    # 构建输出路径
     output_filename = f"filled_{req.template_id}_{req.customer_id}_{uuid.uuid4().hex[:8]}.pdf"
-    output_path = str(OUTPUTS_DIR / output_filename)
+    output_path     = str(OUTPUTS_DIR / output_filename)
+
+    # 创建 fill_job 记录
+    from modules.template_store import get_fields
+    fields     = get_fields(req.template_id)
+    job_id     = create_fill_job(
+        template_id   = req.template_id,
+        customer_ref  = req.customer_id,
+        customer_name = customer_data.get("full_name", ""),
+        total_fields  = len(fields),
+    )
 
     # 执行填表
     try:
         from modules.filler import fill_pdf
         result = fill_pdf(
-            template_id=req.template_id,
-            customer_data=customer_data,
-            output_path=output_path,
-            source_pdf_path=source_pdf_path,
+            template_id     = req.template_id,
+            customer_data   = customer_data,
+            output_path     = output_path,
+            source_pdf_path = original_pdf,
+            job_id          = job_id,
         )
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=f"源 PDF 文件不存在：{e}")
     except Exception as e:
+        update_fill_job(job_id, {"status": "failed"})
         logger.error(f"填表失败：{e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"填表失败：{e}")
 
-    return {
-        **result,
-        "download_url": f"/download/{output_filename}",
+    # 更新 job 基本结果
+    update_fill_job(job_id, {
+        "output_path"   : output_path,
         "output_filename": output_filename,
+        "status"        : "done",
+        "filled_count"  : result["filled_count"],
+        "skipped_count" : result["skipped_count"],
+        "manual_count"  : result["manual_count"],
+        "total_fields"  : len(fields),
+    })
+
+    # 执行验证
+    try:
+        from modules.template_store import get_settings
+        settings         = get_settings()
+        verification     = verify_job(
+            job_id          = job_id,
+            template_id     = req.template_id,
+            original_pdf_path = original_pdf,
+            output_pdf_path   = output_path,
+            field_results     = result["field_results"],
+            settings          = settings,
+        )
+    except Exception as e:
+        logger.warning(f"验证失败（不阻断下载）：{e}")
+        verification = {
+            "total_fields" : len(fields),
+            "pass_count"   : result["filled_count"],
+            "warning_count": 0,
+            "fail_count"   : 0,
+            "manual_count" : result["manual_count"],
+            "final_verdict": "pass",
+            "field_verdicts": [],
+            "image_diff"   : {"available": False, "verdict": "pass", "pages": []},
+        }
+
+    return {
+        # 填表基本结果
+        "job_id"         : job_id,
+        "download_url"   : f"/download/{output_filename}",
+        "output_filename": output_filename,
+        "filled_count"   : result["filled_count"],
+        "manual_count"   : result["manual_count"],
+        "skipped_count"  : result["skipped_count"],
+        "manual_fields"  : result["manual_fields"],
+        # 验证摘要
+        "verification": {
+            "total_fields" : verification["total_fields"],
+            "pass_count"   : verification["pass_count"],
+            "warning_count": verification["warning_count"],
+            "fail_count"   : verification["fail_count"],
+            "manual_count" : verification["manual_count"],
+            "final_verdict": verification["final_verdict"],
+            "image_diff_available": verification["image_diff"].get("available", False),
+            "image_diff_verdict"  : verification["image_diff"].get("verdict", "pass"),
+        },
+        "field_verdicts": verification.get("field_verdicts", []),
     }
 
 
 @app.get("/download/{filename}", tags=["Fill"])
 async def download_file(filename: str):
-    """下载已生成的填好 PDF"""
     file_path = OUTPUTS_DIR / filename
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="文件不存在或已过期")
@@ -316,25 +402,71 @@ async def download_file(filename: str):
         filename=filename,
     )
 
+# ──────────────────────────────────────────────────────────────
+#  Fill Jobs（Phase 4）
+# ──────────────────────────────────────────────────────────────
 
-# ── 辅助接口 ──────────────────────────────────────────────────
+@app.get("/jobs", tags=["Jobs"])
+async def list_jobs(limit: int = 20):
+    """返回最近 fill_jobs 列表，供 Dashboard 展示。"""
+    from modules.template_store import list_fill_jobs
+    return list_fill_jobs(limit=limit)
+
+
+@app.get("/jobs/{job_id}", tags=["Jobs"])
+async def get_job(job_id: int):
+    """返回单个任务详情（含字段级验证结果）。"""
+    from modules.template_store import get_fill_job, get_job_fields
+    job = get_fill_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    job_fields = get_job_fields(job_id)
+    return {**job, "field_results": job_fields}
+
+# ──────────────────────────────────────────────────────────────
+#  Settings（Phase 3）
+# ──────────────────────────────────────────────────────────────
+
+@app.get("/settings", tags=["Settings"])
+async def get_settings():
+    """返回全局配置（含固定只读字段）。"""
+    from modules.template_store import get_settings as _get
+    return _get()
+
+
+@app.post("/settings", tags=["Settings"])
+async def update_settings(req: SettingsUpdateRequest):
+    """
+    更新可变配置项。
+    render_base / allow_custom_drawn_templates / allow_modify_original_content
+    这三个字段为固定值，即使传入也会被忽略。
+    """
+    from modules.template_store import update_settings as _update
+    data = (
+        req.model_dump(exclude_none=True)
+        if hasattr(req, "model_dump")
+        else req.dict(exclude_none=True)
+    )
+    updated = _update(data)
+    return updated
+
+# ──────────────────────────────────────────────────────────────
+#  辅助接口
+# ──────────────────────────────────────────────────────────────
 
 @app.get("/standard-keys", tags=["Meta"])
 async def get_standard_keys():
-    """返回所有支持的标准字段键列表（供前端下拉选项）"""
     from modules.field_normalizer import get_all_standard_keys
     return {"keys": get_all_standard_keys()}
 
 
 @app.post("/synonyms", tags=["Meta"])
 async def add_synonym(req: SynonymRequest):
-    """添加用户自定义同义词并使匹配器缓存失效"""
-    from modules.template_store import add_synonym as _add_synonym
+    from modules.template_store import add_synonym as _add
     from modules.field_normalizer import invalidate_cache
-    _add_synonym(req.standard_key, req.synonym, source="user")
+    _add(req.standard_key, req.synonym, source="user")
     invalidate_cache()
     return {"success": True}
-
 
 # ──────────────────────────────────────────────────────────────
 #  直接运行（开发用）

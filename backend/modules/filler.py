@@ -1,23 +1,17 @@
 """
-filler.py
----------
-PDF 精准回填引擎。
+filler.py — PDF 精准回填引擎（v2）
+------------------------------------
+核心规则（PRD §六）：
+  - 输出必须以 original.pdf 为底板，在其上叠加文字层。
+  - 严禁创建空白 PDF 再重绘表格。
+  - 所有排版参数从 system_settings 读取；字段级参数可覆盖全局。
 
-核心算法（按蓝图 §3.5）：
-  1. 读取模板字段列表（坐标 + standard_key + 排版参数）
-  2. 从客户数据 dict 中取出对应值
-  3. 在透明 ReportLab overlay 上，按以下规则绘制每段文字：
-     - 水平：x_start = cell_x0 + padding_left（≈ 一个字宽）
-     - 垂直：y_center = cell_top + (cell_height - font_size) / 2
-     - 字体从 font_size_max 开始，每次减 font_size_step，
-       直到字符串宽度 ≤ 可用宽度（cell_width - padding_left - 2pt 右边距）
-     - 若降到 font_size_min 仍放不下 → 标记 needs_manual=True，跳过该字段
-  4. 将 overlay 与原 PDF 逐页合并，输出到 output_path
-
-字体说明：
-  - 中文内容需要内嵌中文字体；本实现使用 ReportLab 内置的 Helvetica 作为回退。
-  - 生产环境建议注册支持中英文的 TTF 字体（如 NotoSansSC），
-    放置于 backend/fonts/ 目录，然后取消注释下方 TODO 行。
+流程：
+  1. 读取 system_settings 全局配置
+  2. 对每个字段调用 compute_layout() 计算排版
+  3. 用 ReportLab 在透明 overlay 上绘字
+  4. 用 pypdf 将 overlay 合并到 original.pdf 各页
+  5. 返回 fill_result（含字段级结果列表，供 verifier 使用）
 """
 
 import io
@@ -27,10 +21,9 @@ from pathlib import Path
 from typing import Optional
 
 from reportlab.pdfgen import canvas
-# Note: 'pt' is not a constant in reportlab.lib.units (it's already in pt units natively)
-# We use raw point values directly — 1 pt = 1/72 inch, which is reportlab's native unit
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfbase.pdfmetrics import stringWidth
 from pypdf import PdfReader, PdfWriter
 
 logger = logging.getLogger(__name__)
@@ -39,24 +32,175 @@ logger = logging.getLogger(__name__)
 #  字体注册
 # ──────────────────────────────────────────────────────────────
 
-FONT_NAME = "Helvetica"   # 默认回退字体（ASCII）
-
-# TODO（生产部署）：注册支持中文的 TTF 字体
-# FONT_DIR = os.path.join(os.path.dirname(__file__), "..", "fonts")
-# FONT_PATH = os.path.join(FONT_DIR, "NotoSansSC-Regular.ttf")
-# if os.path.exists(FONT_PATH):
-#     pdfmetrics.registerFont(TTFont("NotoSansSC", FONT_PATH))
-#     FONT_NAME = "NotoSansSC"
+_REGISTERED_FONTS: set[str] = set()
+DEFAULT_FONT = "Helvetica"
 
 
-def _get_string_width(text: str, font_name: str, font_size: float) -> float:
-    """计算字符串在指定字体和字号下的宽度（pt）"""
-    from reportlab.pdfbase.pdfmetrics import stringWidth
-    return stringWidth(text, font_name, font_size)
+def _ensure_font(font_name: str) -> str:
+    """
+    确保字体已注册。若字体是 Helvetica 等内置字体，直接返回。
+    若是 TTF 路径，尝试注册。
+    失败时回退到 Helvetica。
+    """
+    if font_name in ("Helvetica", "Times-Roman", "Courier"):
+        return font_name
+    if font_name in _REGISTERED_FONTS:
+        return font_name
+    # 尝试在 backend/fonts/ 找同名 TTF
+    fonts_dir = os.path.join(os.path.dirname(__file__), "..", "fonts")
+    candidates = [
+        os.path.join(fonts_dir, f"{font_name}.ttf"),
+        os.path.join(fonts_dir, f"{font_name}-Regular.ttf"),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                pdfmetrics.registerFont(TTFont(font_name, path))
+                _REGISTERED_FONTS.add(font_name)
+                logger.info(f"已注册字体：{font_name} from {path}")
+                return font_name
+            except Exception as e:
+                logger.warning(f"字体注册失败 {path}: {e}")
+    logger.warning(f"字体 '{font_name}' 不可用，回退到 Helvetica")
+    return DEFAULT_FONT
 
 
 # ──────────────────────────────────────────────────────────────
-#  核心对外接口
+#  compute_layout — PRD §六 核心排版逻辑
+# ──────────────────────────────────────────────────────────────
+
+def compute_layout(field: dict, value: str, settings: dict) -> dict:
+    """
+    根据字段坐标、值、全局 settings（以及字段级覆盖）计算排版参数。
+
+    返回字典：
+      status       : "write" | "manual" | "skip"
+      font_name    : str
+      font_size    : float
+      text_x       : float   (ReportLab 坐标系，原点左下角)
+      baseline_y   : float
+      align        : str
+      reason       : str     (状态原因，调试用)
+    """
+    # ── 1. 空值处理 ──────────────────────────────────────────
+    if value is None or str(value).strip() == "":
+        return {"status": "skip", "reason": "no_value"}
+
+    value = str(value).strip()
+
+    # ── 2. 字符数阈值检查（manual_threshold）────────────────
+    manual_threshold = int(settings.get("manual_threshold", 80))
+    if len(value) > manual_threshold:
+        return {"status": "manual", "reason": f"value_too_long ({len(value)} chars)"}
+
+    # ── 3. 读取坐标（pdfplumber top-down 系）────────────────
+    x0     = float(field.get("cell_x0", 0.0))
+    top    = float(field.get("cell_top", 0.0))
+    x1     = float(field.get("cell_x1", 0.0))
+    bottom = float(field.get("cell_bottom", 0.0))
+
+    cell_width  = x1 - x0
+    cell_height = bottom - top
+
+    if cell_width <= 0 or cell_height <= 0:
+        return {"status": "skip", "reason": "invalid_cell_size"}
+
+    # ── 4. 字体参数（字段级覆盖 > settings 全局）───────────
+    font_name  = _ensure_font(
+        field.get("font_name") or settings.get("default_font_name", DEFAULT_FONT)
+    )
+    size_max   = float(field.get("font_size_max") or settings.get("default_font_size_max", 11.0))
+    size_min   = float(field.get("font_size_min") or settings.get("default_font_size_min", 6.0))
+    size_step  = float(field.get("font_size_step") or settings.get("default_font_size_step", 0.5))
+
+    # ── 5. 对齐方式 ──────────────────────────────────────────
+    align = field.get("align") or settings.get("default_text_align", "left")
+
+    # ── 6. 左侧 padding（pt）────────────────────────────────
+    left_padding = float(settings.get("default_left_padding_px", 4.0))
+
+    # ── 7. 字号自适应收缩循环 ────────────────────────────────
+    overflow_policy = settings.get("overflow_policy", "mark_manual_without_writing")
+    font_size = size_max
+    chosen_size: Optional[float] = None
+
+    while font_size >= size_min - 0.001:
+        available = cell_width - left_padding - 2.0   # 2pt 右边安全边距
+        if available <= 0:
+            available = cell_width - 2.0
+        w = stringWidth(value, font_name, font_size)
+        if w <= available:
+            chosen_size = font_size
+            break
+        font_size = round(font_size - size_step, 3)
+
+    if chosen_size is None:
+        if overflow_policy == "mark_manual_without_writing":
+            return {"status": "manual", "reason": "overflow"}
+        # write_visible_part_and_mark_manual：写入但同时标记
+        chosen_size = size_min
+
+    # ── 8. 垂直位置计算（坐标转换为 ReportLab bottom-up）────
+    # pdfplumber 的 top/bottom 是从页面顶部向下量的；
+    # 需要在 draw 时传入 page_height 才能做转换。
+    # 这里先存储 top-down 坐标，转换在 draw 时进行。
+    vertical_strategy = settings.get("default_vertical_strategy", "center_baseline")
+    custom_offset = float(settings.get("default_custom_offset", 0.0))
+
+    # ── 9. 水平位置 ──────────────────────────────────────────
+    if align == "center":
+        text_x = x0 + cell_width / 2.0
+    elif align == "right":
+        text_x = x1 - 2.0
+    else:
+        text_x = x0 + left_padding
+
+    return {
+        "status"           : "write",
+        "font_name"        : font_name,
+        "font_size"        : chosen_size,
+        "text_x"           : text_x,
+        "align"            : align,
+        # 垂直信息（top-down，转换在 _draw_overlay 时进行）
+        "cell_top"         : top,
+        "cell_bottom"      : bottom,
+        "cell_height"      : cell_height,
+        "vertical_strategy": vertical_strategy,
+        "custom_offset"    : custom_offset,
+        "reason"           : "ok",
+    }
+
+
+def _baseline_y_rl(layout: dict, page_height: float) -> float:
+    """
+    将 pdfplumber top-down 坐标转换为 ReportLab bottom-up baseline。
+    """
+    cell_top    = layout["cell_top"]
+    cell_bottom = layout["cell_bottom"]
+    cell_height = layout["cell_height"]
+    font_size   = layout["font_size"]
+    strategy    = layout.get("vertical_strategy", "center_baseline")
+    offset      = layout.get("custom_offset", 0.0)
+
+    rl_bottom = page_height - cell_bottom  # 格子底部在 RL 坐标的 y
+    rl_top    = page_height - cell_top     # 格子顶部在 RL 坐标的 y
+
+    if strategy == "top":
+        # 文字基线紧贴格子顶部内侧
+        baseline = rl_top - font_size * 0.8
+    elif strategy == "custom_offset":
+        baseline = rl_bottom + (cell_height / 2) + offset
+    else:
+        # center_baseline（默认）：视觉上垂直居中
+        # ReportLab baseline 在字符底部；视觉中心 ≈ baseline + 0.3*font_size
+        # 所以 baseline = rl_bottom + (cell_height - font_size) / 2
+        baseline = rl_bottom + (cell_height - font_size) / 2.0
+
+    return baseline
+
+
+# ──────────────────────────────────────────────────────────────
+#  fill_pdf — 主入口
 # ──────────────────────────────────────────────────────────────
 
 def fill_pdf(
@@ -64,245 +208,195 @@ def fill_pdf(
     customer_data: dict,
     output_path: str,
     source_pdf_path: Optional[str] = None,
+    job_id: Optional[int] = None,
 ) -> dict:
     """
-    主函数：将客户数据填入 PDF 模板并保存到 output_path。
+    将客户数据填入 original.pdf，生成叠字后的 PDF。
 
     参数：
-      template_id     — 模板 ID（从 SQLite 读取字段列表）
-      customer_data   — {standard_key: value} 字典（来自 excel_reader）
-      output_path     — 输出 PDF 文件路径
-      source_pdf_path — 原始空白 PDF 路径（若为 None，从 uploads/ 自动找）
+      template_id     — 模板 ID
+      customer_data   — {standard_key: value}
+      output_path     — 输出 PDF 路径
+      source_pdf_path — 原件 PDF 路径（None 则从模板记录中读取）
+      job_id          — fill_jobs 的 ID（可选，用于保存字段结果）
 
     返回：
       {
-          "success": bool,
-          "output_path": str,
-          "filled_count": int,      # 成功填写字段数
-          "manual_count": int,      # 需人工处理字段数
-          "skipped_count": int,     # 无匹配值字段数
-          "manual_fields": [...]    # 需人工处理的字段 raw_label 列表
+        "success"       : bool,
+        "output_path"   : str,
+        "filled_count"  : int,
+        "manual_count"  : int,
+        "skipped_count" : int,
+        "manual_fields" : list[str],
+        "field_results" : list[dict],   # 每个字段的详细结果（供 verifier 使用）
       }
     """
-    from modules.template_store import get_fields, get_template, update_field
+    from modules.template_store import (
+        get_fields, get_template, update_field,
+        get_settings, save_job_fields,
+    )
 
-    # 1. 读取模板信息
+    # ── 读取模板 ────────────────────────────────────────────
     template = get_template(template_id)
     if not template:
         raise ValueError(f"模板 {template_id} 不存在")
 
-    # 2. 确定源 PDF 路径
+    # ── 确定原件 PDF 路径 ────────────────────────────────────
+    from modules.template_store import resolve_original_pdf
     if source_pdf_path is None:
-        source_pdf_path = _find_source_pdf(template)
-    if not os.path.exists(source_pdf_path):
-        raise FileNotFoundError(f"源 PDF 文件不存在：{source_pdf_path}")
+        source_pdf_path = resolve_original_pdf(template)
+    if not source_pdf_path or not os.path.exists(source_pdf_path):
+        raise FileNotFoundError(f"原件 PDF 不存在：{source_pdf_path}")
 
-    # 3. 读取字段列表
+    # ── 读取全局 settings ────────────────────────────────────
+    settings = get_settings()
+
+    # ── 读取字段列表 ─────────────────────────────────────────
     fields = get_fields(template_id)
     if not fields:
         raise ValueError(f"模板 {template_id} 没有字段记录")
 
-    # 4. 读取原始 PDF 页面信息
-    reader = PdfReader(source_pdf_path)
+    # ── 打开原件 PDF ─────────────────────────────────────────
+    reader     = PdfReader(source_pdf_path)
     page_count = len(reader.pages)
 
-    # 5. 按页分组字段
+    # ── 按页分组 ─────────────────────────────────────────────
     pages_fields: dict[int, list[dict]] = {}
     for f in fields:
         pg = f.get("page_number", 1)
         pages_fields.setdefault(pg, []).append(f)
 
-    # 6. 为每页生成 overlay
+    # ── 逐页生成 overlay ─────────────────────────────────────
     overlays: dict[int, io.BytesIO] = {}
-    filled_count = 0
-    manual_count = 0
+    filled_count  = 0
+    manual_count  = 0
     skipped_count = 0
-    manual_fields = []
+    manual_fields: list[str] = []
+    field_results: list[dict] = []
 
     for page_idx in range(page_count):
-        page_num = page_idx + 1
-        pdf_page = reader.pages[page_idx]
-        page_width = float(pdf_page.mediabox.width)
-        page_height = float(pdf_page.mediabox.height)
+        page_num  = page_idx + 1
+        pdf_page  = reader.pages[page_idx]
+        pg_width  = float(pdf_page.mediabox.width)
+        pg_height = float(pdf_page.mediabox.height)
 
         page_fields = pages_fields.get(page_num, [])
         if not page_fields:
             continue
 
         overlay_buf = io.BytesIO()
-        c = canvas.Canvas(overlay_buf, pagesize=(page_width, page_height))
+        c = canvas.Canvas(overlay_buf, pagesize=(pg_width, pg_height))
 
         for field in page_fields:
             std_key = field.get("standard_key", "")
             if not std_key:
                 skipped_count += 1
+                field_results.append({
+                    "field_id": field["id"],
+                    "value"   : "",
+                    "status"  : "skip",
+                    "reason"  : "no_standard_key",
+                })
                 continue
 
-            # 从客户数据中取值（支持带/不带 customer. 前缀）
             value = _get_field_value(customer_data, std_key)
-            if value is None or value == "":
-                skipped_count += 1
-                continue
 
-            result = _draw_text_in_cell(c, field, value, page_height)
-            if result == "filled":
+            # compute_layout
+            layout = compute_layout(field, value or "", settings)
+
+            fr = {
+                "field_id": field["id"],
+                "value"   : value or "",
+                "status"  : layout["status"],
+                "reason"  : layout.get("reason", ""),
+                "font_size": layout.get("font_size"),
+                "text_x"  : layout.get("text_x"),
+                "text_y"  : None,
+            }
+
+            if layout["status"] == "write":
+                baseline = _baseline_y_rl(layout, pg_height)
+                fr["text_y"] = baseline
+
+                # 绘制文字
+                fn   = layout["font_name"]
+                fs   = layout["font_size"]
+                tx   = layout["text_x"]
+                algn = layout["align"]
+
+                c.setFillColorRGB(0.08, 0.08, 0.08)
+                c.setFont(fn, fs)
+
+                if algn == "center":
+                    c.drawCentredString(tx, baseline, value)
+                elif algn == "right":
+                    c.drawRightString(tx, baseline, value)
+                else:
+                    c.drawString(tx, baseline, value)
+
                 filled_count += 1
-            elif result == "manual":
+
+            elif layout["status"] == "manual":
                 manual_count += 1
-                manual_fields.append(field.get("raw_label", std_key))
-                # 标记数据库
+                label = field.get("raw_label") or std_key
+                manual_fields.append(label)
                 update_field(field["id"], {"needs_manual": 1})
+
+            else:  # skip
+                skipped_count += 1
+
+            field_results.append(fr)
 
         c.save()
         overlay_buf.seek(0)
         overlays[page_num] = overlay_buf
 
-    # 7. 合并 overlay 与原 PDF
+    # ── 合并 overlay 到原件 PDF ──────────────────────────────
     writer = PdfWriter()
     for page_idx in range(page_count):
-        page_num = page_idx + 1
+        page_num      = page_idx + 1
         original_page = reader.pages[page_idx]
 
         if page_num in overlays:
-            overlay_reader = PdfReader(overlays[page_num])
-            overlay_page = overlay_reader.pages[0]
-            original_page.merge_page(overlay_page)
+            ov_reader = PdfReader(overlays[page_num])
+            ov_page   = ov_reader.pages[0]
+            original_page.merge_page(ov_page)
 
         writer.add_page(original_page)
 
-    # 8. 写出文件
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     with open(output_path, "wb") as f_out:
         writer.write(f_out)
 
     logger.info(
-        f"填表完成：template_id={template_id}, "
-        f"filled={filled_count}, manual={manual_count}, skipped={skipped_count}"
+        f"[fill_pdf] template={template_id} filled={filled_count} "
+        f"manual={manual_count} skipped={skipped_count} → {output_path}"
     )
 
+    # ── 保存字段级结果（若有 job_id）────────────────────────
+    if job_id is not None:
+        from modules.template_store import save_job_fields
+        save_job_fields(job_id, field_results)
+
     return {
-        "success": True,
-        "output_path": output_path,
-        "filled_count": filled_count,
-        "manual_count": manual_count,
+        "success"      : True,
+        "output_path"  : output_path,
+        "filled_count" : filled_count,
+        "manual_count" : manual_count,
         "skipped_count": skipped_count,
         "manual_fields": manual_fields,
+        "field_results": field_results,
     }
 
 
 # ──────────────────────────────────────────────────────────────
-#  文字绘制核心
-# ──────────────────────────────────────────────────────────────
-
-def _draw_text_in_cell(c, field: dict, value: str, page_height: float) -> str:
-    """
-    在 ReportLab canvas 上的指定格子区域内绘制文字。
-
-    坐标说明：
-      - PDF 坐标系：原点在左下角，y 轴向上。
-      - pdfplumber/analyzer 使用的是"top-left 原点"坐标（y 轴向下）。
-      - 需要将 top/bottom 转换：rl_y = page_height - pdf_top
-
-    返回值：
-      "filled"  — 成功绘制
-      "manual"  — 字体降到最小仍放不下，需人工处理
-    """
-    x0 = field.get("cell_x0", 0.0)
-    top = field.get("cell_top", 0.0)           # pdfplumber 坐标（从上往下）
-    x1 = field.get("cell_x1", 0.0)
-    bottom = field.get("cell_bottom", 0.0)
-
-    font_size_max = field.get("font_size_max", 10.0)
-    font_size_min = field.get("font_size_min", 6.0)
-    font_size_step = field.get("font_size_step", 0.5)
-    align = field.get("align", "left")
-
-    cell_width = x1 - x0
-    cell_height = bottom - top
-
-    # 可用宽度：左侧留一个字宽（≈ font_size），右侧留 2pt
-    # 初始以 font_size_max 估算 padding_left
-    padding_left_ratio = 1.0   # 左侧留 1 个字宽
-
-    # 尝试从最大字号开始
-    font_size = font_size_max
-    chosen_size = None
-    while font_size >= font_size_min:
-        padding_left = font_size * padding_left_ratio   # 左边留一个字宽
-        available_width = cell_width - padding_left - 2.0  # 右边 2pt 安全边距
-        if available_width <= 0:
-            available_width = cell_width - 2.0
-            padding_left = 0.0
-
-        text_width = _get_string_width(value, FONT_NAME, font_size)
-        if text_width <= available_width:
-            chosen_size = font_size
-            break
-        font_size = round(font_size - font_size_step, 2)
-
-    if chosen_size is None:
-        # 降到最小字号后仍放不下
-        return "manual"
-
-    # 重新计算最终 padding_left
-    final_padding_left = chosen_size * padding_left_ratio
-    available_width = cell_width - final_padding_left - 2.0
-
-    # 将 pdfplumber top-down 坐标转换为 ReportLab bottom-up 坐标
-    # cell 顶部在 ReportLab 中的 y 坐标
-    rl_cell_top = page_height - top
-    rl_cell_bottom = page_height - bottom
-
-    # 垂直居中：文字基线 = rl_cell_bottom + (cell_height - chosen_size) / 2
-    # ReportLab 文字基线在字符底部，descent 约为字号的 0.2
-    text_baseline = rl_cell_bottom + (cell_height - chosen_size) / 2
-
-    # 水平对齐
-    if align == "center":
-        text_x = x0 + cell_width / 2
-    elif align == "right":
-        text_x = x1 - 2.0
-    else:  # left（默认）
-        text_x = x0 + final_padding_left
-
-    # 设置字体颜色（深灰/黑）
-    c.setFillColorRGB(0.1, 0.1, 0.1)
-    c.setFont(FONT_NAME, chosen_size)
-
-    if align == "center":
-        c.drawCentredString(text_x, text_baseline, value)
-    elif align == "right":
-        c.drawRightString(text_x, text_baseline, value)
-    else:
-        c.drawString(text_x, text_baseline, value)
-
-    return "filled"
-
-
-# ──────────────────────────────────────────────────────────────
-#  辅助函数
+#  辅助
 # ──────────────────────────────────────────────────────────────
 
 def _get_field_value(customer_data: dict, standard_key: str) -> Optional[str]:
-    """
-    从客户数据中获取字段值，支持两种键格式：
-      - "customer.full_name"
-      - "full_name"
-    """
     if standard_key in customer_data:
-        return customer_data[standard_key] or None
-    # 尝试去掉前缀
-    bare_key = standard_key.replace("customer.", "")
-    return customer_data.get(bare_key) or None
-
-
-def _find_source_pdf(template: dict) -> str:
-    """根据模板记录推断源 PDF 路径"""
-    uploads_dir = os.path.join(os.path.dirname(__file__), "..", "uploads")
-    filename = template.get("source_filename", "")
-    if filename:
-        candidate = os.path.join(uploads_dir, filename)
-        if os.path.exists(candidate):
-            return candidate
-    # 找不到时返回一个路径（会触发 FileNotFoundError）
-    return os.path.join(uploads_dir, filename)
+        v = customer_data[standard_key]
+        return str(v).strip() if v is not None else None
+    bare = standard_key.replace("customer.", "")
+    v = customer_data.get(bare)
+    return str(v).strip() if v is not None else None

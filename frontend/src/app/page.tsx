@@ -2,27 +2,48 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { getTemplates, getCustomers, Template, Customer } from '@/lib/api';
+import { getTemplates, getCustomers, getJobs, Template, Customer, FillJob } from '@/lib/api';
+
+// ── 工具：裁定颜色 ────────────────────────────────────────────
+function verdictColor(v?: string) {
+  if (v === 'pass')    return 'var(--success)';
+  if (v === 'warning') return 'var(--warning)';
+  if (v === 'fail')    return 'var(--danger)';
+  return 'var(--dg)';
+}
+
+function VerdictBadge({ verdict }: { verdict?: string }) {
+  if (!verdict || verdict === 'pending') return <span className="badge badge--muted">—</span>;
+  const map: Record<string, string> = {
+    pass:    'badge--success',
+    warning: 'badge--warning',
+    fail:    'badge--danger',
+  };
+  return <span className={`badge ${map[verdict] ?? 'badge--muted'}`}>{verdict.toUpperCase()}</span>;
+}
 
 export default function DashboardPage() {
   const [templates, setTemplates] = useState<Template[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [jobs,      setJobs     ] = useState<FillJob[]>([]);
+  const [loading,   setLoading  ] = useState(true);
 
   useEffect(() => {
-    Promise.all([getTemplates(), getCustomers()])
-      .then(([t, c]) => { setTemplates(t); setCustomers(c); })
+    Promise.all([getTemplates(), getCustomers(), getJobs(10)])
+      .then(([t, c, j]) => { setTemplates(t); setCustomers(c); setJobs(j); })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
 
-  const confirmed = templates.filter(t => t.status === 'confirmed' || t.status === 'active').length;
+  const confirmed  = templates.filter(t => t.status === 'confirmed' || t.status === 'active').length;
+  const failedJobs = jobs.filter(j => j.verification_verdict === 'fail' || j.status === 'failed').length;
+  const manualJobs = jobs.filter(j => j.manual_count > 0).length;
 
   return (
     <>
       <div className="page-header">
         <h1 className="page-title">Dashboard</h1>
-        <p className="page-subtitle">智能表格自动填写系统概览</p>
+        <p className="page-subtitle">Smart Form Filler 系统概览 — 原件叠字，严格保留原件内容</p>
       </div>
 
       {/* KPI 卡片 */}
@@ -43,11 +64,35 @@ export default function DashboardPage() {
           <div className="kpi-card__sub">客户主资料</div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-card__label">Status</div>
-          <div className="kpi-card__value" style={{ fontSize: 18, color: 'var(--success)' }}>Online</div>
-          <div className="kpi-card__sub">系统运行中</div>
+          <div className="kpi-card__label">Total Jobs</div>
+          <div className="kpi-card__value">{loading ? '—' : jobs.length}</div>
+          <div className="kpi-card__sub">最近填表任务</div>
         </div>
       </div>
+
+      {/* 异常摘要（若有）*/}
+      {!loading && (failedJobs > 0 || manualJobs > 0) && (
+        <div style={{
+          background: 'rgba(217,79,79,0.06)', border: '1px solid var(--danger)',
+          borderRadius: 'var(--radius)', padding: '10px 16px', marginBottom: 20,
+          display: 'flex', gap: 24, alignItems: 'center',
+        }}>
+          <span style={{ fontSize: 16 }}>⚠</span>
+          {failedJobs > 0 && (
+            <span style={{ fontSize: 12, color: 'var(--danger)', fontWeight: 600 }}>
+              {failedJobs} 个任务验证失败
+            </span>
+          )}
+          {manualJobs > 0 && (
+            <span style={{ fontSize: 12, color: '#8A6000', fontWeight: 600 }}>
+              {manualJobs} 个任务含人工补填字段
+            </span>
+          )}
+          <Link href="/fill" className="btn btn--secondary btn--sm" style={{ marginLeft: 'auto' }}>
+            查看填表页
+          </Link>
+        </div>
+      )}
 
       {/* 快速操作 */}
       <div className="grid-3 mb-6">
@@ -61,7 +106,7 @@ export default function DashboardPage() {
               </svg>
             </div>
             <div className="section-title mb-2">Upload New Form</div>
-            <p className="caption">上传 PDF 或图片表格，系统自动分析填写字段位置</p>
+            <p className="caption">上传原件 PDF，系统自动分析字段位置，保存为可复用模板</p>
           </div>
         </Link>
 
@@ -74,7 +119,7 @@ export default function DashboardPage() {
               </svg>
             </div>
             <div className="section-title mb-2">Fill Form</div>
-            <p className="caption">选择模板与客户，一键执行精准回填并下载填好的 PDF</p>
+            <p className="caption">选择模板与客户，在原件上叠字，验证并下载成品 PDF</p>
           </div>
         </Link>
 
@@ -87,10 +132,64 @@ export default function DashboardPage() {
               </svg>
             </div>
             <div className="section-title mb-2">Manage Templates</div>
-            <p className="caption">查看、编辑和确认所有已上传的表格模板与字段映射</p>
+            <p className="caption">查看、编辑和确认已上传的表格模板及字段映射</p>
           </div>
         </Link>
       </div>
+
+      {/* 最近填表任务 */}
+      {jobs.length > 0 && (
+        <div className="card mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <span className="section-title">Recent Fill Jobs</span>
+            <Link href="/fill" className="btn btn--secondary btn--sm">Fill New</Link>
+          </div>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Job #</th>
+                <th>Template</th>
+                <th>Customer</th>
+                <th>Filled / Total</th>
+                <th>Manual</th>
+                <th>Verdict</th>
+                <th>Status</th>
+                <th>Time</th>
+              </tr>
+            </thead>
+            <tbody>
+              {jobs.map(j => (
+                <tr key={j.id}>
+                  <td style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--dg)' }}>#{j.id}</td>
+                  <td style={{ fontWeight: 600, maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {j.template_name || `Template #${j.template_id}`}
+                  </td>
+                  <td>
+                    <span style={{ fontWeight: 600 }}>{j.customer_name || j.customer_ref}</span>
+                    <span className="text-muted" style={{ fontSize: 10, marginLeft: 4 }}>{j.customer_ref}</span>
+                  </td>
+                  <td>
+                    <span style={{ color: 'var(--success)', fontWeight: 600 }}>{j.filled_count}</span>
+                    <span className="text-muted"> / {j.total_fields}</span>
+                  </td>
+                  <td>
+                    {j.manual_count > 0
+                      ? <span style={{ color: 'var(--warning)', fontWeight: 600 }}>{j.manual_count}</span>
+                      : <span className="text-muted">0</span>}
+                  </td>
+                  <td><VerdictBadge verdict={j.verification_verdict} /></td>
+                  <td>
+                    <span className={`badge badge--${j.status === 'done' ? 'success' : j.status === 'failed' ? 'danger' : 'muted'}`}>
+                      {j.status}
+                    </span>
+                  </td>
+                  <td className="text-muted" style={{ fontSize: 10 }}>{j.created_at?.slice(0, 16)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* 最近模板 */}
       {templates.length > 0 && (
@@ -121,12 +220,9 @@ export default function DashboardPage() {
                   <td>{t.page_count}</td>
                   <td>
                     <span className={`badge badge--${
-                      t.status === 'active' ? 'success'
-                      : t.status === 'confirmed' ? 'info'
-                      : 'muted'
-                    }`}>
-                      {t.status}
-                    </span>
+                      t.status === 'active'    ? 'success' :
+                      t.status === 'confirmed' ? 'info'    : 'muted'
+                    }`}>{t.status}</span>
                   </td>
                   <td className="text-muted">{t.created_at?.slice(0, 10)}</td>
                 </tr>
