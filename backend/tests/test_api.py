@@ -243,11 +243,20 @@ class TestFillForm:
         )
         assert response.status_code == 200
         data = response.json()
-        assert data["success"] is True
-        assert data["filled_count"] > 0
+        # PRD v3: no 'success' or 'filled_count' — use write_count / fail_count
+        assert "write_count" in data
+        assert "fail_count" in data
         assert "download_url" in data
         assert data["download_url"].startswith("/download/")
         assert data["output_filename"].endswith(".pdf")
+        # Verification must be strict pass/fail
+        v = data["verification"]
+        assert v["final_verdict"] in ("pass", "fail")
+        assert "total_pass" in v
+        assert "total_fail" in v
+        # No gray states allowed
+        for gray in ("warning_count", "manual_count", "pass_count"):
+            assert gray not in v, f"Gray key '{gray}' found in verification response"
 
     def test_fill_form_output_file_exists(self):
         response = client.post(
@@ -256,9 +265,14 @@ class TestFillForm:
         )
         assert response.status_code == 200
         data = response.json()
-        output_path = data["output_path"]
-        assert os.path.exists(output_path), f"Output file not found: {output_path}"
-        assert os.path.getsize(output_path) > 1000, "Output PDF is suspiciously small"
+        # PRD v3: output path derived from output_filename
+        import re
+        filename = data["output_filename"]
+        assert filename.endswith(".pdf")
+        # Download endpoint must serve the file
+        dl = client.get(f"/download/{filename}")
+        assert dl.status_code == 200
+        assert len(dl.content) > 1000, "Output PDF is suspiciously small"
 
     def test_fill_form_download_endpoint(self):
         fill_response = client.post(
