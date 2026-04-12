@@ -15,6 +15,8 @@ import {
 // ── AG Grid CSS (Community) ──────────────────────────────────
 import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-alpine.css';
+// Morandi Violet 主题覆盖（独立 CSS 文件，避免 hydration mismatch）
+import '@/styles/customers-grid.css';
 
 // ── Toast 辅助 ───────────────────────────────────────────────
 
@@ -688,65 +690,6 @@ export default function CustomersPage() {
         </p>
       </div>
 
-      {/* ── 自定义表头样式（覆盖 AG Grid alpine theme）───── */}
-      <style>{`
-        /* Customers 页专属：AG Grid 表头 Morandi Violet 深紫渐层 */
-        .ag-theme-alpine .ag-header {
-          background: linear-gradient(90deg, #2D2440 0%, #4A3F6B 100%);
-          border-bottom: 1px solid #2D2440;
-        }
-        .ag-theme-alpine .ag-header-cell {
-          font-family: 'Cormorant Garamond', 'Playfair Display', Georgia, serif;
-          font-size: 12px;
-          font-weight: 800;
-          color: #FDFCFB;
-          border-right: none !important;
-          letter-spacing: 0.02em;
-        }
-        .ag-theme-alpine .ag-header-cell:hover {
-          background: rgba(255,255,255,0.08) !important;
-        }
-        .ag-theme-alpine .ag-header-cell-text {
-          color: #FDFCFB;
-        }
-        .ag-theme-alpine .ag-sort-indicator-icon {
-          color: rgba(255,255,255,0.7);
-        }
-        .ag-theme-alpine .ag-icon {
-          color: rgba(255,255,255,0.8);
-        }
-        /* 隐藏竖线，只保留横线 */
-        .ag-theme-alpine .ag-cell {
-          border-right: none !important;
-          border-bottom: 1px solid var(--silver);
-          line-height: 36px;
-        }
-        .ag-theme-alpine .ag-row {
-          border-bottom: none;
-        }
-        .ag-theme-alpine .ag-row:hover {
-          background: var(--vp) !important;
-        }
-        .ag-theme-alpine .ag-row-selected {
-          background: rgba(123,111,160,0.10) !important;
-        }
-        /* 复选框列表头 */
-        .ag-theme-alpine .ag-header-select-all {
-          color: rgba(255,255,255,0.9);
-        }
-        /* 编辑态单元格 */
-        .ag-theme-alpine .ag-cell-inline-editing {
-          border: 1px solid var(--vm) !important;
-          box-shadow: 0 0 0 2px rgba(123,111,160,0.2) !important;
-        }
-        /* 固定列阴影 */
-        .ag-theme-alpine .ag-pinned-left-cols-container .ag-cell:last-child {
-          border-right: 1px solid var(--vl) !important;
-        }
-        .ag-theme-alpine .ag-pinned-right-cols-container .ag-cell:first-child {
-          border-left: 1px solid var(--vl) !important;
-        }
-      `}</style>
     </>
   );
 }
