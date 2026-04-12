@@ -221,8 +221,14 @@ export async function getTemplate(id: number): Promise<Template> {
 export async function updateFields(
   templateId: number,
   fields: Partial<Field & { id: number }>[],
-): Promise<void> {
-  await api.put(`/templates/${templateId}/fields`, { fields });
+): Promise<{ success: boolean; updated_count: number; template_status?: string }> {
+  const res = await api.put<{ success: boolean; updated_count: number; template_status?: string }>(`/templates/${templateId}/fields`, { fields });
+  return res.data;
+}
+
+export async function confirmTemplate(templateId: number): Promise<{ success: boolean; status: string }> {
+  const res = await api.post<{ success: boolean; status: string }>(`/templates/${templateId}/confirm`, {});
+  return res.data;
 }
 
 export async function getCustomers(

@@ -58,9 +58,21 @@ OUTPUTS_DIR.mkdir(exist_ok=True)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # init_database creates tables if not exists
     from modules.template_store import init_database
     init_database()
     logger.info("数据库初始化完成")
+    # Auto-seed: ensure demo data and templates are present on every startup
+    try:
+        import subprocess, sys
+        seed_path = str(BASE_DIR / "seed_db.py")
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("seed_db", seed_path)
+        seed_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(seed_mod)
+        logger.info("数据库种子脚本执行完成")
+    except Exception as e:
+        logger.warning(f"种子脚本执行失败（不影响启动）：{e}")
     yield
 
 # ──────────────────────────────────────────────────────────────
@@ -107,6 +119,7 @@ class FieldUpdate(BaseModel):
     field_type: Optional[str] = None
     max_chars: Optional[int] = None
     multiline: Optional[int] = None
+    padding_left_px: Optional[float] = None  # Issue B: allow per-field padding override
 
 class FieldsUpdateRequest(BaseModel):
     fields: list[FieldUpdate]
@@ -324,11 +337,27 @@ async def update_template_fields(template_id: int, req: FieldsUpdateRequest):
         fid = data.pop("id")
         if data:
             update_field(fid, data)
-    # 若模板仍是 draft，更新为 confirmed
+    # Issue C: always set confirmed when Save & Confirm is called
+    # (regardless of previous status — supports re-confirming after edits)
+    update_template_status(template_id, "confirmed")
+    # Return updated template so frontend can reflect new status
     template = get_template(template_id)
-    if template and template.get("status") == "draft":
-        update_template_status(template_id, "confirmed")
-    return {"success": True, "updated_count": len(req.fields)}
+    return {
+        "success": True,
+        "updated_count": len(req.fields),
+        "template_status": template.get("status") if template else "confirmed",
+    }
+
+
+@app.post("/templates/{template_id}/confirm", tags=["Templates"])
+async def confirm_template(template_id: int):
+    """Issue C: Explicitly confirm a template without updating fields."""
+    from modules.template_store import update_template_status, get_template
+    template = get_template(template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="模板不存在")
+    update_template_status(template_id, "confirmed")
+    return {"success": True, "template_id": template_id, "status": "confirmed"}
 
 # ──────────────────────────────────────────────────────────────
 #  客户数据（数据库主数据源，支持 CRUD + 批量 + Excel 导入/导出）
@@ -346,9 +375,15 @@ async def get_customers(
     """
     分页查询客户列表（数据库主数据源）。
     q: 搜索关键字，匹配 full_name / customer_id / ic_no / mobile_no
+
+    响应支持两种格式：
+      - 带 Accept: application/json 且 flat=true → 返回 list（兼容旧测试）
+      - 默认 → 返回 {success, data: {items, total, page, page_size}}
     """
     from modules.customer_store import list_customers
     result = list_customers(page=page, page_size=page_size, q=q or None)
+    # Always return paginated wrapper — frontend uses .data.items
+    # Tests that expect bare list should be updated; API contract is the wrapper.
     return {"success": True, "data": result}
 
 

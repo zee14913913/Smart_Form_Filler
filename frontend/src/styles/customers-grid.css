@@ -18,8 +18,45 @@
   font-size: 12px;
   font-weight: 800;
   color: #FDFCFB;
+  /* Issue D2: remove ALL vertical separators from header cells */
   border-right: none !important;
+  border-left: none !important;
+  box-shadow: none !important;
   letter-spacing: 0.02em;
+}
+
+/* Issue D2: pseudo-elements used by AG Grid v32 for resize handle separators */
+.ag-theme-alpine .ag-header-cell::before,
+.ag-theme-alpine .ag-header-cell::after {
+  display: none !important;
+  background: none !important;
+  border: none !important;
+}
+
+/* Issue D2: AG Grid resize handle bar */
+.ag-theme-alpine .ag-header-cell-resize {
+  display: none !important;
+}
+
+.ag-theme-alpine .ag-header-cell-resize::after {
+  display: none !important;
+  background: none !important;
+  border: none !important;
+  box-shadow: none !important;
+  width: 0 !important;
+}
+
+/* Issue D2: separator element used by some AG Grid builds */
+.ag-theme-alpine .ag-header-cell-separator {
+  display: none !important;
+}
+
+/* Issue D2: column separator via --ag-header-column-separator */
+.ag-theme-alpine {
+  --ag-header-column-separator-display: none;
+  --ag-header-column-separator-color: transparent;
+  --ag-header-column-resize-handle-color: transparent;
+  --ag-header-column-resize-handle-display: none;
 }
 
 .ag-theme-alpine .ag-header-cell:hover {
@@ -32,6 +69,11 @@
 
 .ag-theme-alpine .ag-sort-indicator-icon {
   color: rgba(255, 255, 255, 0.7);
+}
+
+/* Issue D2: hide all column-header icons/menu except sort */
+.ag-theme-alpine .ag-header-icon.ag-header-cell-menu-button {
+  display: none !important;
 }
 
 .ag-theme-alpine .ag-icon {

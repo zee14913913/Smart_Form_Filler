@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { getTemplate, updateFields, getStandardKeys, Template, Field } from '@/lib/api';
+import { getTemplate, updateFields, confirmTemplate as apiConfirmTemplate, getStandardKeys, Template, Field } from '@/lib/api';
 
 export default function TemplateDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -41,9 +41,13 @@ export default function TemplateDetailPage() {
         text_align: f.text_align,
         font_size_max: f.font_size_max,
         font_size_min: f.font_size_min,
+        padding_left_px: f.padding_left_px,
         is_confirmed: 1,
       }));
       await updateFields(Number(id), updates);
+      // Issue C: refresh template to reflect new confirmed status
+      const refreshed = await getTemplate(Number(id));
+      setTemplate(refreshed);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch {
@@ -138,6 +142,7 @@ export default function TemplateDetailPage() {
                   <th>Raw Label</th>
                   <th>Standard Key</th>
                   <th>Align</th>
+                  <th>Padding L</th>
                   <th>Font Max</th>
                   <th>Font Min</th>
                   <th>Cell Size</th>
@@ -180,6 +185,19 @@ export default function TemplateDetailPage() {
                         <option value="center">Center</option>
                         <option value="right">Right</option>
                       </select>
+                    </td>
+                    <td style={{ minWidth: 65 }}>
+                      <input
+                        type="number"
+                        className="form-input"
+                        style={{ padding: '4px 6px', fontSize: 11, width: 52 }}
+                        value={f.padding_left_px ?? 4}
+                        step={0.5}
+                        min={0}
+                        max={20}
+                        title="Left padding in points (default: 4pt)"
+                        onChange={e => handleFieldChange(f.id, 'padding_left_px', parseFloat(e.target.value) || 0)}
+                      />
                     </td>
                     <td style={{ minWidth: 70 }}>
                       <input

@@ -93,7 +93,10 @@ class TestCustomers:
     def test_list_customers_returns_records(self):
         response = client.get("/customers")
         assert response.status_code == 200
-        customers = response.json()
+        body = response.json()
+        # API returns {success, data: {items, total, page, page_size}}
+        assert body.get("success") is True
+        customers = body["data"]["items"]
         assert isinstance(customers, list)
         assert len(customers) >= 1
         # Verify first record has required fields
