@@ -226,7 +226,7 @@ export default function UploadPage() {
                           )}
                         </td>
                         <td className="text-muted">
-                          {f.cell_width?.toFixed(0) || '?'} × {f.cell_height?.toFixed(0) || '?'} pt
+                          {((f.cell_x1 - f.cell_x0) || 0).toFixed(0)} × {((f.cell_bottom - f.cell_top) || 0).toFixed(0)} pt
                         </td>
                       </tr>
                     ))}

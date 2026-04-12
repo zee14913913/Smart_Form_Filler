@@ -27,19 +27,19 @@ function ReadonlyRow({ label, value }: { label: string; value: string }) {
 }
 
 export default function SettingsPage() {
-  const [settings, setSettings]         = useState<SystemSettings | null>(null);
-  const [loadingSettings, setLoading]   = useState(true);
-  const [saving, setSaving]             = useState(false);
-  const [saveMsg, setSaveMsg]           = useState('');
+  const [settings, setSettings]       = useState<SystemSettings | null>(null);
+  const [loadingSettings, setLoading] = useState(true);
+  const [saving, setSaving]           = useState(false);
+  const [saveMsg, setSaveMsg]         = useState('');
 
   // 同义词
-  const [synKey, setSynKey]             = useState('');
-  const [synValue, setSynValue]         = useState('');
-  const [synSaving, setSynSaving]       = useState(false);
-  const [synMsg, setSynMsg]             = useState('');
+  const [synKey, setSynKey]           = useState('');
+  const [synValue, setSynValue]       = useState('');
+  const [synSaving, setSynSaving]     = useState(false);
+  const [synMsg, setSynMsg]           = useState('');
 
   // 本地编辑草稿
-  const [draft, setDraft]               = useState<Partial<SystemSettings>>({});
+  const [draft, setDraft]             = useState<Partial<SystemSettings>>({});
 
   useEffect(() => {
     getSettings()
@@ -107,9 +107,11 @@ export default function SettingsPage() {
           <ReadonlyRow label="render_base" value="original_pdf  ✓  固定不可改" />
           <ReadonlyRow label="allow_custom_drawn_templates" value="false  —  禁止自绘表格" />
           <ReadonlyRow label="allow_modify_original_content" value="false  —  禁止修改原件" />
+          <ReadonlyRow label="result_states" value="PASS / FAIL 严格两值  —  无 warning / manual" />
           <div style={{ marginTop: 12, background: 'rgba(74,63,107,0.06)', borderRadius: 6, padding: '10px 14px', fontSize: 11, color: 'var(--vd)' }}>
             输出 PDF 必须以上传的原件为底板，仅在空白格子位置叠字。
             严禁用 HTML / CSS / Canvas 重绘表格后导出。
+            所有结果只允许 PASS 或 FAIL，绝无灰色中间态。
           </div>
         </div>
 
@@ -205,33 +207,25 @@ export default function SettingsPage() {
           )}
         </div>
 
-        {/* ── 溢出策略 ─────────────────────────────────────────── */}
+        {/* ── 失败阈值（PRD v3 — 替代旧版溢出策略）────────────── */}
         <div className="settings-card">
-          <div className="settings-card__title">溢出策略（Overflow Policy）</div>
+          <div className="settings-card__title">失败阈值（Fail Threshold）</div>
+          <p className="caption mb-3" style={{ color: 'var(--ink)' }}>
+            PRD 规定：溢出不允许标记为灰色状态。超过字符阈值或字号缩至最小仍溢出，
+            字段直接判定为 <strong>FAIL</strong>。
+          </p>
           {!loadingSettings && (
-            <>
-              <div className="form-group">
-                <label className="form-label">溢出处理方式</label>
-                <select className="form-select"
-                  value={field('overflow_policy')}
-                  onChange={e => setField('overflow_policy', e.target.value)}>
-                  <option value="mark_manual_without_writing">
-                    mark_manual_without_writing（不写入，标记 manual）
-                  </option>
-                  <option value="write_visible_part_and_mark_manual">
-                    write_visible_part_and_mark_manual（写入最小字号并标记 manual）
-                  </option>
-                </select>
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">字符数阈值 manual_threshold</label>
-                <input type="number" className="form-input" step="5" min="10" max="500"
-                  value={field('manual_threshold')}
-                  onChange={e => setField('manual_threshold', Number(e.target.value))} />
-                <p className="caption mt-1">超过此字符数的字段直接标记 manual，不尝试收缩字号</p>
-              </div>
-            </>
+            <div className="form-group">
+              <label className="form-label">字符数上限 fail_threshold</label>
+              <input type="number" className="form-input" step="10" min="10" max="500"
+                value={field('fail_threshold')}
+                onChange={e => setField('fail_threshold', Number(e.target.value))} />
+              <p className="caption mt-1">
+                超过此字符数 → 字段直接 fail（不尝试收缩字号）。
+                字号缩至最小仍溢出 → 同样直接 fail。
+                无任何 manual / warning 灰色中间态。
+              </p>
+            </div>
           )}
         </div>
 
@@ -241,11 +235,12 @@ export default function SettingsPage() {
           {!loadingSettings && (
             <div className="form-group">
               <label className="form-label">图像差分阈值 verify_pixel_diff_threshold</label>
-              <input type="number" className="form-input" step="0.005" min="0.001" max="0.1"
+              <input type="number" className="form-input" step="0.005" min="0.001" max="0.05"
                 value={field('verify_pixel_diff_threshold')}
                 onChange={e => setField('verify_pixel_diff_threshold', Number(e.target.value))} />
               <p className="caption mt-1">
-                非填写区域像素差异超过此比例时，视为原件被篡改（fail）。默认 0.02 = 2%。
+                非填写区域像素差异超过此比例时，视为原件被篡改 → 整体 FAIL。
+                默认 0.01 = 1%（严格模式）。超过即判 fail，无 warning 缓冲。
               </p>
             </div>
           )}
@@ -316,11 +311,12 @@ export default function SettingsPage() {
           <div className="settings-card__title">System Info</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {[
-              ['Backend', 'FastAPI (Python 3.10+)'],
+              ['Backend', 'FastAPI v3 (Python 3.10+)'],
               ['Frontend', 'Next.js 14 (TypeScript)'],
-              ['Database', 'SQLite (templates.db)'],
+              ['Database', 'SQLite (templates.db v3.0)'],
               ['PDF Engine', 'pdfplumber + ReportLab + pypdf'],
-              ['Verifier', 'verifier.py (field + image diff)'],
+              ['Verifier', 'verifier.py — PASS/FAIL strict'],
+              ['States', 'write | fail  /  pass | fail  — 无灰色状态'],
               ['API Port', 'http://localhost:8000'],
               ['Frontend Port', 'http://localhost:3000'],
             ].map(([label, value]) => (

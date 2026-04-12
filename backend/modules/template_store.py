@@ -4,10 +4,10 @@ template_store.py
 负责 SQLite 模板库的所有 CRUD 操作：
   - 初始化数据库（建表）
   - form_templates CRUD（含 original_pdf_path）
-  - form_fields CRUD
+  - form_fields CRUD（含 field_type / max_chars / multiline）
   - field_synonyms CRUD
-  - system_settings 读写
-  - fill_jobs / fill_job_fields 读写
+  - system_settings 读写（fail_threshold，无 overflow_policy/manual_threshold）
+  - fill_jobs / fill_job_fields 读写（total_pass/total_fail，无 warning/manual 计数）
 """
 
 import sqlite3
@@ -17,9 +17,9 @@ from pathlib import Path
 from typing import Optional
 
 # 数据库文件路径
-DB_PATH   = os.path.join(os.path.dirname(__file__), "..", "database", "templates.db")
-INIT_SQL  = os.path.join(os.path.dirname(__file__), "..", "database", "init_db.sql")
-DATA_DIR  = os.path.join(os.path.dirname(__file__), "..", "data", "forms")
+DB_PATH  = os.path.join(os.path.dirname(__file__), "..", "database", "templates.db")
+INIT_SQL = os.path.join(os.path.dirname(__file__), "..", "database", "init_db.sql")
+DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "forms")
 
 
 def get_connection() -> sqlite3.Connection:
@@ -158,6 +158,10 @@ def resolve_original_pdf(template: dict) -> Optional[str]:
 # ──────────────────────────────────────────────────────────────
 
 def save_fields(template_id: int, fields: list[dict]):
+    """
+    批量保存字段到 form_fields 表。
+    支持 PRD v3 新增列：field_type / max_chars / multiline。
+    """
     conn = get_connection()
     try:
         for f in fields:
@@ -165,16 +169,21 @@ def save_fields(template_id: int, fields: list[dict]):
                 """
                 INSERT INTO form_fields (
                     template_id, page_number, raw_label, standard_key,
+                    field_type, max_chars, multiline,
                     cell_x0, cell_top, cell_x1, cell_bottom,
                     font_size_max, font_size_min, font_size_step,
-                    align, is_confirmed
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    text_align, padding_left_px, padding_vertical_strategy,
+                    is_confirmed
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     template_id,
                     f.get("page_number", 1),
                     f.get("raw_label", ""),
                     f.get("standard_key", ""),
+                    f.get("field_type", "text"),
+                    f.get("max_chars", 0),
+                    f.get("multiline", 0),
                     f.get("cell_x0", 0.0),
                     f.get("cell_top", 0.0),
                     f.get("cell_x1", 0.0),
@@ -182,7 +191,9 @@ def save_fields(template_id: int, fields: list[dict]):
                     f.get("font_size_max", 10.0),
                     f.get("font_size_min", 6.0),
                     f.get("font_size_step", 0.5),
-                    f.get("align", "left"),
+                    f.get("text_align") or f.get("align", "left"),
+                    f.get("padding_left_px", 0.0),
+                    f.get("padding_vertical_strategy", ""),
                     0,
                 ),
             )
@@ -207,11 +218,20 @@ def update_field(field_id: int, updates: dict):
     if not updates:
         return
     allowed_cols = {
-        "standard_key", "raw_label", "cell_x0", "cell_top", "cell_x1", "cell_bottom",
-        "font_size_max", "font_size_min", "font_size_step", "align",
-        "padding_left", "padding_vertical", "is_confirmed", "needs_manual",
+        "standard_key", "raw_label", "field_type", "max_chars", "multiline",
+        "cell_x0", "cell_top", "cell_x1", "cell_bottom",
+        "font_size_max", "font_size_min", "font_size_step",
+        "text_align", "padding_left_px", "padding_vertical_strategy",
+        "is_confirmed",
+        # 兼容旧调用（align → text_align 已统一，但保留 align 作为别名）
+        "align",
     }
     safe = {k: v for k, v in updates.items() if k in allowed_cols}
+    # 把旧字段名 align 映射到 text_align
+    if "align" in safe and "text_align" not in safe:
+        safe["text_align"] = safe.pop("align")
+    elif "align" in safe:
+        safe.pop("align")
     if not safe:
         return
     set_clause = ", ".join(f"{k} = ?" for k in safe)
@@ -262,6 +282,7 @@ def add_synonym(standard_key: str, synonym: str, source: str = "user"):
 #  system_settings
 # ──────────────────────────────────────────────────────────────
 
+# PRD v3：移除 overflow_policy / manual_threshold；新增 fail_threshold
 SETTINGS_MUTABLE_COLS = {
     "default_font_name",
     "default_font_size_max",
@@ -271,15 +292,13 @@ SETTINGS_MUTABLE_COLS = {
     "default_vertical_strategy",
     "default_custom_offset",
     "default_text_align",
-    "default_multiline_behavior",
-    "overflow_policy",
-    "manual_threshold",
+    "fail_threshold",
     "verify_pixel_diff_threshold",
 }
 
 # 固定只读字段（不允许前端修改）
 SETTINGS_READONLY = {
-    "render_base": "original_pdf",
+    "render_base"                : "original_pdf",
     "allow_custom_drawn_templates": 0,
     "allow_modify_original_content": 0,
 }
@@ -329,16 +348,18 @@ def create_fill_job(
     customer_ref: str,
     customer_name: str = "",
     total_fields: int = 0,
+    original_pdf_path: str = "",
 ) -> int:
     conn = get_connection()
     try:
         cur = conn.execute(
             """
             INSERT INTO fill_jobs
-                (template_id, customer_ref, customer_name, status, total_fields)
-            VALUES (?, ?, ?, 'running', ?)
+                (template_id, customer_ref, customer_name, status,
+                 total_fields, original_pdf_path)
+            VALUES (?, ?, ?, 'running', ?, ?)
             """,
-            (template_id, customer_ref, customer_name, total_fields),
+            (template_id, customer_ref, customer_name, total_fields, original_pdf_path),
         )
         conn.commit()
         return cur.lastrowid
@@ -347,11 +368,19 @@ def create_fill_job(
 
 
 def update_fill_job(job_id: int, updates: dict):
+    """
+    允许更新的列（PRD v3）：
+      output_path, output_filename, status,
+      total_fields, total_pass, total_fail,
+      verification_status, final_verdict
+    已移除：filled_count, skipped_count, manual_count,
+            verification_verdict, pass_count, warning_count, fail_count
+    """
     allowed = {
         "output_path", "output_filename", "status",
-        "filled_count", "skipped_count", "manual_count", "total_fields",
-        "verification_status", "verification_verdict",
-        "pass_count", "warning_count", "fail_count",
+        "total_fields", "total_pass", "total_fail",
+        "verification_status", "final_verdict",
+        "original_pdf_path",
     }
     safe = {k: v for k, v in updates.items() if k in allowed}
     if not safe:
@@ -396,22 +425,25 @@ def list_fill_jobs(limit: int = 20) -> list[dict]:
 
 
 def save_job_fields(job_id: int, field_results: list[dict]):
-    """批量保存 fill_job_fields（每个字段的填写结果）。"""
+    """
+    批量保存 fill_job_fields（每个字段的填写结果）。
+    列名对齐 PRD v3：fill_status / fill_reason（原 status/reason）。
+    """
     conn = get_connection()
     try:
         for fr in field_results:
             conn.execute(
                 """
                 INSERT INTO fill_job_fields
-                    (job_id, field_id, value, status, reason, font_size, text_x, text_y)
+                    (job_id, field_id, value, fill_status, fill_reason, font_size, text_x, text_y)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
                     fr.get("field_id"),
                     fr.get("value", ""),
-                    fr.get("status", "skip"),
-                    fr.get("reason", ""),
+                    fr.get("fill_status", "fail"),
+                    fr.get("fill_reason", ""),
                     fr.get("font_size"),
                     fr.get("text_x"),
                     fr.get("text_y"),

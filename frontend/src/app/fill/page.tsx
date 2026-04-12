@@ -7,37 +7,66 @@ import {
   Template, Customer, FillFormResponse, FieldVerdict,
 } from '@/lib/api';
 
-// ── 验证状态标签 ───────────────────────────────────────────────
+// ── 验证状态标签（PRD v3：严格两值）──────────────────────────
 
 function VerdictBadge({ verdict }: { verdict: string }) {
   const map: Record<string, { cls: string; label: string }> = {
-    pass   : { cls: 'badge--success', label: '✓ PASS' },
-    warning: { cls: 'badge--warning', label: '⚠ WARNING' },
-    fail   : { cls: 'badge--danger',  label: '✕ FAIL' },
-    manual : { cls: 'badge--warning', label: '✎ MANUAL' },
+    pass: { cls: 'badge--success', label: '✓ PASS' },
+    fail: { cls: 'badge--danger',  label: '✕ FAIL' },
   };
   const { cls, label } = map[verdict] ?? { cls: 'badge--muted', label: verdict };
   return <span className={`badge ${cls}`}>{label}</span>;
 }
 
-// ── 验证摘要卡片 ───────────────────────────────────────────────
+// ── 不可交付警告横幅 ──────────────────────────────────────────
+
+function FailBanner({ failCount, failFields }: { failCount: number; failFields: string[] }) {
+  return (
+    <div style={{
+      background: 'rgba(217,79,79,0.12)',
+      border: '2px solid var(--danger)',
+      borderRadius: 'var(--radius)',
+      padding: '14px 16px',
+      marginBottom: 16,
+    }}>
+      <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--danger)', marginBottom: 6 }}>
+        ✕ 不可交付 — 本次填表结果不合格
+      </div>
+      <p style={{ fontSize: 12, color: 'var(--danger)', marginBottom: failFields.length > 0 ? 8 : 0 }}>
+        共 {failCount} 个字段验证失败。请检查字段映射、字符长度或格子坐标，修正后重新填表。
+      </p>
+      {failFields.length > 0 && (
+        <div>
+          <p style={{ fontSize: 11, color: '#8B0000', fontWeight: 600, marginBottom: 4 }}>
+            失败字段：
+          </p>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+            {failFields.map((f, i) => (
+              <span key={i} className="badge badge--danger" style={{ fontSize: 10 }}>{f}</span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── 验证摘要卡片（PRD v3）────────────────────────────────────
 
 function VerificationCard({ result }: { result: FillFormResponse }) {
   const v = result.verification;
   const [expanded, setExpanded] = useState(false);
 
-  const verdictColor =
-    v.final_verdict === 'pass'    ? 'var(--success)' :
-    v.final_verdict === 'warning' ? 'var(--warning)' :
-    'var(--danger)';
+  const isFail = v.final_verdict === 'fail';
+  const verdictColor = isFail ? 'var(--danger)' : 'var(--success)';
 
   return (
     <div style={{
-      border: `1px solid ${verdictColor}`,
+      border: `2px solid ${verdictColor}`,
       borderRadius: 'var(--radius)',
       padding: 16,
       marginBottom: 16,
-      background: '#FAFAF9',
+      background: isFail ? 'rgba(217,79,79,0.04)' : '#FAFAF9',
     }}>
       {/* 标题行 */}
       <div className="flex items-center justify-between mb-3">
@@ -47,14 +76,12 @@ function VerificationCard({ result }: { result: FillFormResponse }) {
         <VerdictBadge verdict={v.final_verdict} />
       </div>
 
-      {/* 统计格 */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8, marginBottom: 12 }}>
+      {/* 统计格（PRD v3：只有 pass / fail 计数）*/}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 12 }}>
         {[
-          { label: '总字段', val: v.total_fields, color: 'var(--ink)' },
-          { label: 'Pass',   val: v.pass_count,    color: 'var(--success)' },
-          { label: 'Warning',val: v.warning_count,  color: 'var(--warning)' },
-          { label: 'Fail',   val: v.fail_count,     color: 'var(--danger)' },
-          { label: 'Manual', val: v.manual_count,   color: '#8A6000' },
+          { label: '总字段',   val: v.total_fields, color: 'var(--ink)' },
+          { label: 'Pass',    val: v.total_pass,   color: 'var(--success)' },
+          { label: 'Fail',    val: v.total_fail,   color: 'var(--danger)' },
         ].map(({ label, val, color }) => (
           <div key={label} style={{ textAlign: 'center', background: 'var(--vp)', borderRadius: 6, padding: '6px 0' }}>
             <div style={{ fontSize: 18, fontWeight: 700, color }}>{val}</div>
@@ -69,6 +96,11 @@ function VerificationCard({ result }: { result: FillFormResponse }) {
           原件图像对比：<VerdictBadge verdict={v.image_diff_verdict} />
           {v.image_diff_verdict === 'pass' && (
             <span style={{ marginLeft: 8 }}>非填写区域与原件 100% 一致 ✓</span>
+          )}
+          {v.image_diff_verdict === 'fail' && (
+            <span style={{ marginLeft: 8, color: 'var(--danger)', fontWeight: 600 }}>
+              非填写区域与原件存在差异 — 原件可能被篡改
+            </span>
           )}
         </div>
       )}
@@ -89,7 +121,7 @@ function VerificationCard({ result }: { result: FillFormResponse }) {
           </button>
 
           {expanded && (
-            <div style={{ marginTop: 12, maxHeight: 280, overflowY: 'auto' }}>
+            <div style={{ marginTop: 12, maxHeight: 300, overflowY: 'auto' }}>
               <table className="data-table" style={{ fontSize: 11 }}>
                 <thead>
                   <tr>
@@ -102,13 +134,17 @@ function VerificationCard({ result }: { result: FillFormResponse }) {
                 </thead>
                 <tbody>
                   {result.field_verdicts.map((v: FieldVerdict) => (
-                    <tr key={v.field_id}>
+                    <tr key={v.field_id} style={{
+                      background: v.verify_status === 'fail'
+                        ? 'rgba(217,79,79,0.06)' : undefined,
+                    }}>
                       <td>{v.raw_label || '—'}</td>
                       <td style={{ fontFamily: 'var(--font-mono)', fontSize: 10 }}>{v.standard_key}</td>
-                      <td><span className={`badge badge--${
-                        v.fill_status === 'write' ? 'success' :
-                        v.fill_status === 'manual' ? 'warning' : 'muted'
-                      }`}>{v.fill_status}</span></td>
+                      <td>
+                        <span className={`badge badge--${v.fill_status === 'write' ? 'success' : 'danger'}`}>
+                          {v.fill_status}
+                        </span>
+                      </td>
                       <td><VerdictBadge verdict={v.verify_status} /></td>
                       <td style={{ color: 'var(--dg)', fontSize: 10 }}>{v.verify_reason}</td>
                     </tr>
@@ -165,6 +201,8 @@ function FillFormContent() {
   const selectedTemplateObj = templates.find(t => String(t.id) === selectedTemplate);
   const selectedCustomerObj = customers.find(c => c.customer_id === selectedCustomer);
 
+  const isFinalFail = result?.verification.final_verdict === 'fail';
+
   return (
     <>
       <div className="page-header">
@@ -185,8 +223,8 @@ function FillFormContent() {
             <span className="step-label">Select Customer</span>
           </div>
           <div className="step-line" />
-          <div className={`step ${result ? 'done' : selectedCustomer ? 'active' : ''}`}>
-            <div className="step-circle">{result ? '✓' : '3'}</div>
+          <div className={`step ${result ? (isFinalFail ? 'fail' : 'done') : selectedCustomer ? 'active' : ''}`}>
+            <div className="step-circle">{result ? (isFinalFail ? '✕' : '✓') : '3'}</div>
             <span className="step-label">Verify &amp; Download</span>
           </div>
         </div>
@@ -315,61 +353,74 @@ function FillFormContent() {
         ) : (
           /* 结果区域 */
           <div>
+            {/* ── 不可交付警告（fail 时置顶显示）── */}
+            {isFinalFail && (
+              <FailBanner
+                failCount={result.verification.total_fail}
+                failFields={result.fail_fields}
+              />
+            )}
+
             {/* 基本统计 */}
-            <div className="card mb-4" style={{ border: '1px solid var(--success)' }}>
+            <div className="card mb-4" style={{
+              border: `1px solid ${isFinalFail ? 'var(--danger)' : 'var(--success)'}`,
+            }}>
               <div className="flex items-center gap-2 mb-4">
-                <span style={{ fontSize: 20 }}>✅</span>
-                <span className="section-title" style={{ color: 'var(--success)' }}>
+                <span style={{ fontSize: 20 }}>{isFinalFail ? '❌' : '✅'}</span>
+                <span className="section-title" style={{ color: isFinalFail ? 'var(--danger)' : 'var(--success)' }}>
                   PDF Generated — Job #{result.job_id}
+                  {isFinalFail && ' — 不可交付'}
                 </span>
               </div>
               <div className="grid-3 mb-4">
                 <div>
-                  <span className="form-label">Filled Fields</span>
-                  <p style={{ fontWeight: 700, color: 'var(--success)', fontSize: 22 }}>{result.filled_count}</p>
+                  <span className="form-label">Written Fields</span>
+                  <p style={{ fontWeight: 700, color: 'var(--success)', fontSize: 22 }}>{result.write_count}</p>
                 </div>
                 <div>
-                  <span className="form-label">Skipped</span>
-                  <p style={{ color: 'var(--dg)', fontSize: 22 }}>{result.skipped_count}</p>
+                  <span className="form-label">Failed Fields</span>
+                  <p style={{ fontWeight: 700, color: result.fail_count > 0 ? 'var(--danger)' : 'var(--dg)', fontSize: 22 }}>
+                    {result.fail_count}
+                  </p>
                 </div>
                 <div>
-                  <span className="form-label">Manual Required</span>
-                  <p style={{ fontWeight: 700, color: result.manual_count > 0 ? 'var(--warning)' : 'var(--dg)', fontSize: 22 }}>
-                    {result.manual_count}
+                  <span className="form-label">Final Verdict</span>
+                  <p style={{
+                    fontWeight: 700, fontSize: 18,
+                    color: isFinalFail ? 'var(--danger)' : 'var(--success)',
+                  }}>
+                    {result.verification.final_verdict.toUpperCase()}
                   </p>
                 </div>
               </div>
 
-              {/* Manual 字段列表 */}
-              {result.manual_fields.length > 0 && (
-                <div style={{
-                  background: 'rgba(240,165,0,0.08)', border: '1px solid var(--warning)',
-                  borderRadius: 'var(--radius)', padding: 12, marginBottom: 16,
-                }}>
-                  <p style={{ fontSize: 11, color: '#8A6000', fontWeight: 600, marginBottom: 6 }}>
-                    ⚠ 以下字段需要人工补填（字符太长或无法适配格子）：
-                  </p>
-                  {result.manual_fields.map((f, i) => (
-                    <span key={i} className="badge badge--warning" style={{ marginRight: 6, marginBottom: 4 }}>{f}</span>
-                  ))}
-                </div>
-              )}
-
-              {/* 下载按钮 */}
+              {/* 下载按钮 — 仅在 pass 时显示；fail 时禁用并说明 */}
               <div className="flex gap-3">
-                <a
-                  href={`http://localhost:8000${result.download_url}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="btn btn--primary btn--lg"
-                >
-                  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
-                    <polyline points="7 10 12 15 17 10"/>
-                    <line x1="12" y1="15" x2="12" y2="3"/>
-                  </svg>
-                  Download Filled PDF
-                </a>
+                {!isFinalFail ? (
+                  <a
+                    href={`http://localhost:8000${result.download_url}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="btn btn--primary btn--lg"
+                  >
+                    <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                      <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                      <polyline points="7 10 12 15 17 10"/>
+                      <line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                    Download Filled PDF
+                  </a>
+                ) : (
+                  <div style={{
+                    flex: 1, padding: '10px 14px',
+                    background: 'rgba(217,79,79,0.08)',
+                    border: '1px solid var(--danger)',
+                    borderRadius: 'var(--radius)',
+                    fontSize: 12, color: 'var(--danger)', fontWeight: 600,
+                  }}>
+                    ✕ 验证失败 — 此 PDF 不可交付，请修正字段后重新填表
+                  </div>
+                )}
                 <button className="btn btn--secondary btn--lg" onClick={() => setResult(null)}>
                   Fill Another
                 </button>

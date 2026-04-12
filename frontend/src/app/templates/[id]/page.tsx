@@ -38,7 +38,7 @@ export default function TemplateDetailPage() {
       const updates = fields.map(f => ({
         id: f.id,
         standard_key: f.standard_key,
-        align: f.align,
+        text_align: f.text_align,
         font_size_max: f.font_size_max,
         font_size_min: f.font_size_min,
         is_confirmed: 1,
@@ -173,8 +173,8 @@ export default function TemplateDetailPage() {
                       <select
                         className="form-select"
                         style={{ padding: '4px 6px', fontSize: 11 }}
-                        value={f.align || 'left'}
-                        onChange={e => handleFieldChange(f.id, 'align', e.target.value)}
+                        value={f.text_align || 'left'}
+                        onChange={e => handleFieldChange(f.id, 'text_align', e.target.value)}
                       >
                         <option value="left">Left</option>
                         <option value="center">Center</option>
@@ -206,12 +206,10 @@ export default function TemplateDetailPage() {
                       />
                     </td>
                     <td className="text-muted" style={{ whiteSpace: 'nowrap', fontSize: 11 }}>
-                      {f.cell_width?.toFixed(0)}×{f.cell_height?.toFixed(0)} pt
+                      {((f.cell_x1 - f.cell_x0) || 0).toFixed(0)}×{((f.cell_bottom - f.cell_top) || 0).toFixed(0)} pt
                     </td>
                     <td>
-                      {f.needs_manual
-                        ? <span className="badge badge--warning">Manual</span>
-                        : f.is_confirmed
+                      {f.is_confirmed
                         ? <span className="badge badge--success">✓</span>
                         : <span className="badge badge--muted">Draft</span>}
                     </td>

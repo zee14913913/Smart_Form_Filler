@@ -36,8 +36,7 @@ export default function DashboardPage() {
   }, []);
 
   const confirmed  = templates.filter(t => t.status === 'confirmed' || t.status === 'active').length;
-  const failedJobs = jobs.filter(j => j.verification_verdict === 'fail' || j.status === 'failed').length;
-  const manualJobs = jobs.filter(j => j.manual_count > 0).length;
+  const failedJobs = jobs.filter(j => j.final_verdict === 'fail' || j.status === 'failed').length;
 
   return (
     <>
@@ -71,7 +70,7 @@ export default function DashboardPage() {
       </div>
 
       {/* 异常摘要（若有）*/}
-      {!loading && (failedJobs > 0 || manualJobs > 0) && (
+      {!loading && failedJobs > 0 && (
         <div style={{
           background: 'rgba(217,79,79,0.06)', border: '1px solid var(--danger)',
           borderRadius: 'var(--radius)', padding: '10px 16px', marginBottom: 20,
@@ -81,11 +80,6 @@ export default function DashboardPage() {
           {failedJobs > 0 && (
             <span style={{ fontSize: 12, color: 'var(--danger)', fontWeight: 600 }}>
               {failedJobs} 个任务验证失败
-            </span>
-          )}
-          {manualJobs > 0 && (
-            <span style={{ fontSize: 12, color: '#8A6000', fontWeight: 600 }}>
-              {manualJobs} 个任务含人工补填字段
             </span>
           )}
           <Link href="/fill" className="btn btn--secondary btn--sm" style={{ marginLeft: 'auto' }}>
@@ -150,8 +144,8 @@ export default function DashboardPage() {
                 <th>Job #</th>
                 <th>Template</th>
                 <th>Customer</th>
-                <th>Filled / Total</th>
-                <th>Manual</th>
+                <th>Pass / Total</th>
+                <th>Fail</th>
                 <th>Verdict</th>
                 <th>Status</th>
                 <th>Time</th>
@@ -169,15 +163,15 @@ export default function DashboardPage() {
                     <span className="text-muted" style={{ fontSize: 10, marginLeft: 4 }}>{j.customer_ref}</span>
                   </td>
                   <td>
-                    <span style={{ color: 'var(--success)', fontWeight: 600 }}>{j.filled_count}</span>
+                    <span style={{ color: 'var(--success)', fontWeight: 600 }}>{j.total_pass}</span>
                     <span className="text-muted"> / {j.total_fields}</span>
                   </td>
                   <td>
-                    {j.manual_count > 0
-                      ? <span style={{ color: 'var(--warning)', fontWeight: 600 }}>{j.manual_count}</span>
+                    {(j.total_fail ?? 0) > 0
+                      ? <span style={{ color: 'var(--danger)', fontWeight: 600 }}>{j.total_fail}</span>
                       : <span className="text-muted">0</span>}
                   </td>
-                  <td><VerdictBadge verdict={j.verification_verdict} /></td>
+                  <td><VerdictBadge verdict={j.final_verdict ?? ''} /></td>
                   <td>
                     <span className={`badge badge--${j.status === 'done' ? 'success' : j.status === 'failed' ? 'danger' : 'muted'}`}>
                       {j.status}

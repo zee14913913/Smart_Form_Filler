@@ -1,6 +1,6 @@
 """
-main.py — FastAPI 入口 (v2)
-----------------------------
+main.py — FastAPI 入口 (v3 — PRD Master Prompt 严格版)
+-------------------------------------------------------
 API 列表：
   POST /upload-form                      上传 PDF，分析字段，创建模板
   GET  /templates                        列出所有模板
@@ -16,6 +16,11 @@ API 列表：
   POST /settings                         更新全局配置（只读字段被忽略）
   GET  /standard-keys                    所有标准字段键
   POST /synonyms                         添加同义词
+
+PRD 严格约束：
+  - fill-form 响应只有 pass / fail，无 warning / manual
+  - 验证器异常 → 整体 fail（不 fallback 到 pass）
+  - fill 失败 → 直接返回 fail（不继续验证）
 """
 
 import os
@@ -66,9 +71,10 @@ app = FastAPI(
     description=(
         "智能表格自动填写系统后端 API\n\n"
         "核心约束：输出 PDF 必须以原件为底板，在原件上叠字。\n"
-        "render_base = original_pdf（固定，不可修改）。"
+        "render_base = original_pdf（固定，不可修改）。\n"
+        "结果只允许 PASS / FAIL，无任何灰色状态。"
     ),
-    version="2.0.0",
+    version="3.0.0",
     lifespan=lifespan,
 )
 
@@ -87,12 +93,16 @@ app.add_middleware(
 class FieldUpdate(BaseModel):
     id: int
     standard_key: Optional[str] = None
-    align: Optional[str] = None
+    text_align: Optional[str] = None
+    align: Optional[str] = None           # 兼容旧前端
     font_size_max: Optional[float] = None
     font_size_min: Optional[float] = None
     font_size_step: Optional[float] = None
     is_confirmed: Optional[int] = None
     raw_label: Optional[str] = None
+    field_type: Optional[str] = None
+    max_chars: Optional[int] = None
+    multiline: Optional[int] = None
 
 class FieldsUpdateRequest(BaseModel):
     fields: list[FieldUpdate]
@@ -115,12 +125,10 @@ class SettingsUpdateRequest(BaseModel):
     default_left_padding_px: Optional[float] = None
     default_vertical_strategy: Optional[str] = None
     default_custom_offset: Optional[float] = None
-    # 对齐与多行
+    # 对齐
     default_text_align: Optional[str] = None
-    default_multiline_behavior: Optional[str] = None
-    # 溢出
-    overflow_policy: Optional[str] = None
-    manual_threshold: Optional[int] = None
+    # 失败阈值（PRD v3：替代 overflow_policy + manual_threshold）
+    fail_threshold: Optional[int] = None
     # 验证阈值
     verify_pixel_diff_threshold: Optional[float] = None
 
@@ -132,7 +140,7 @@ class SettingsUpdateRequest(BaseModel):
 async def root():
     return {
         "status" : "ok",
-        "message": "Smart Form Filler API v2 — render_base=original_pdf",
+        "message": "Smart Form Filler API v3 — render_base=original_pdf — PASS/FAIL only",
     }
 
 # ──────────────────────────────────────────────────────────────
@@ -264,7 +272,7 @@ async def get_customer(customer_id: str):
     return data
 
 # ──────────────────────────────────────────────────────────────
-#  填表执行（Phase 2 + 4）
+#  填表执行（PRD v3 严格版）
 # ──────────────────────────────────────────────────────────────
 
 @app.post("/fill-form", tags=["Fill"])
@@ -276,6 +284,11 @@ async def fill_form(req: FillFormRequest):
       3. 调用 filler.fill_pdf()
       4. 调用 verifier.verify_job()
       5. 返回包含验证摘要的完整结果
+
+    PRD 严格约束：
+      - fill 失败 → 直接返回 HTTP 500 + fail（不继续验证）
+      - verifier 异常 → 整体 fail（不 fallback 到 pass）
+      - 响应字段只有 pass/fail 计数，无 warning/manual
     """
     from modules.excel_reader import get_customer as _get_customer
     from modules.template_store import (
@@ -308,18 +321,20 @@ async def fill_form(req: FillFormRequest):
 
     # 创建 fill_job 记录
     from modules.template_store import get_fields
-    fields     = get_fields(req.template_id)
-    job_id     = create_fill_job(
-        template_id   = req.template_id,
-        customer_ref  = req.customer_id,
-        customer_name = customer_data.get("full_name", ""),
-        total_fields  = len(fields),
+    fields  = get_fields(req.template_id)
+    job_id  = create_fill_job(
+        template_id       = req.template_id,
+        customer_ref      = req.customer_id,
+        customer_name     = customer_data.get("full_name", ""),
+        total_fields      = len(fields),
+        original_pdf_path = original_pdf,
     )
 
-    # 执行填表
+    # ── 执行填表 ─────────────────────────────────────────────────
+    # PRD：fill 失败 → 直接 fail，不继续
     try:
         from modules.filler import fill_pdf
-        result = fill_pdf(
+        fill_result = fill_pdf(
             template_id     = req.template_id,
             customer_data   = customer_data,
             output_path     = output_path,
@@ -327,65 +342,77 @@ async def fill_form(req: FillFormRequest):
             job_id          = job_id,
         )
     except Exception as e:
-        update_fill_job(job_id, {"status": "failed"})
+        update_fill_job(job_id, {"status": "failed", "final_verdict": "fail"})
         logger.error(f"填表失败：{e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"填表失败：{e}")
 
-    # 更新 job 基本结果
+    # 更新 job 基本结果（PRD v3 列名：total_pass/total_fail）
+    write_count = fill_result["write_count"]
+    fail_count  = fill_result["fail_count"]
     update_fill_job(job_id, {
-        "output_path"   : output_path,
+        "output_path"    : output_path,
         "output_filename": output_filename,
-        "status"        : "done",
-        "filled_count"  : result["filled_count"],
-        "skipped_count" : result["skipped_count"],
-        "manual_count"  : result["manual_count"],
-        "total_fields"  : len(fields),
+        "status"         : "done",
+        "total_fields"   : len(fields),
+        "total_pass"     : write_count,   # 初步 pass = 写入数；verifier 可能降级
+        "total_fail"     : fail_count,
     })
 
-    # 执行验证
+    # ── 执行验证 ─────────────────────────────────────────────────
+    # PRD：verifier 异常 → fail（不 fallback 到 pass）
     try:
         from modules.template_store import get_settings
-        settings         = get_settings()
-        verification     = verify_job(
-            job_id          = job_id,
-            template_id     = req.template_id,
+        settings     = get_settings()
+        verification = verify_job(
+            job_id            = job_id,
+            template_id       = req.template_id,
             original_pdf_path = original_pdf,
             output_pdf_path   = output_path,
-            field_results     = result["field_results"],
+            field_results     = fill_result["field_results"],
             settings          = settings,
         )
     except Exception as e:
-        logger.warning(f"验证失败（不阻断下载）：{e}")
+        logger.error(f"验证失败（视为 fail）：{e}", exc_info=True)
+        # 验证异常 → 整体 fail
         verification = {
-            "total_fields" : len(fields),
-            "pass_count"   : result["filled_count"],
-            "warning_count": 0,
-            "fail_count"   : 0,
-            "manual_count" : result["manual_count"],
-            "final_verdict": "pass",
+            "total_fields"  : len(fields),
+            "total_pass"    : 0,
+            "total_fail"    : len(fields),
+            "final_verdict" : "fail",
             "field_verdicts": [],
-            "image_diff"   : {"available": False, "verdict": "pass", "pages": []},
+            "image_diff"    : {"available": False, "verdict": "fail", "pages": []},
         }
+        update_fill_job(job_id, {
+            "verification_status": "error",
+            "final_verdict"      : "fail",
+            "total_fail"         : len(fields),
+        })
 
+    # 用验证结果更新最终计数
+    update_fill_job(job_id, {
+        "total_pass"         : verification["total_pass"],
+        "total_fail"         : verification["total_fail"],
+        "verification_status": "done",
+        "final_verdict"      : verification["final_verdict"],
+    })
+
+    # ── 构造响应（PRD v3：无任何灰色字段）───────────────────────
     return {
         # 填表基本结果
         "job_id"         : job_id,
         "download_url"   : f"/download/{output_filename}",
         "output_filename": output_filename,
-        "filled_count"   : result["filled_count"],
-        "manual_count"   : result["manual_count"],
-        "skipped_count"  : result["skipped_count"],
-        "manual_fields"  : result["manual_fields"],
-        # 验证摘要
+        "write_count"    : write_count,
+        "fail_count"     : fail_count,
+        "fail_fields"    : fill_result["fail_fields"],
+        # 验证摘要（严格 pass/fail）
         "verification": {
-            "total_fields" : verification["total_fields"],
-            "pass_count"   : verification["pass_count"],
-            "warning_count": verification["warning_count"],
-            "fail_count"   : verification["fail_count"],
-            "manual_count" : verification["manual_count"],
-            "final_verdict": verification["final_verdict"],
+            "total_fields"       : verification["total_fields"],
+            "total_pass"         : verification["total_pass"],
+            "total_fail"         : verification["total_fail"],
+            "final_verdict"      : verification["final_verdict"],
             "image_diff_available": verification["image_diff"].get("available", False),
-            "image_diff_verdict"  : verification["image_diff"].get("verdict", "pass"),
+            "image_diff_verdict"  : verification["image_diff"].get("verdict", "fail"),
         },
         "field_verdicts": verification.get("field_verdicts", []),
     }
@@ -403,7 +430,7 @@ async def download_file(filename: str):
     )
 
 # ──────────────────────────────────────────────────────────────
-#  Fill Jobs（Phase 4）
+#  Fill Jobs（Phase 4 v3）
 # ──────────────────────────────────────────────────────────────
 
 @app.get("/jobs", tags=["Jobs"])
@@ -424,7 +451,7 @@ async def get_job(job_id: int):
     return {**job, "field_results": job_fields}
 
 # ──────────────────────────────────────────────────────────────
-#  Settings（Phase 3）
+#  Settings（PRD v3）
 # ──────────────────────────────────────────────────────────────
 
 @app.get("/settings", tags=["Settings"])
@@ -440,6 +467,7 @@ async def update_settings(req: SettingsUpdateRequest):
     更新可变配置项。
     render_base / allow_custom_drawn_templates / allow_modify_original_content
     这三个字段为固定值，即使传入也会被忽略。
+    overflow_policy / manual_threshold 已废除，传入会被忽略。
     """
     from modules.template_store import update_settings as _update
     data = (
